@@ -7,8 +7,10 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/GalaxyGorilla/modbus-shield/internal/mbtcp"
 )
@@ -17,25 +19,59 @@ import (
 // of holding register 0x0100 (value 0xCAFE) and echoes transaction and
 // unit IDs exactly, like a well-behaved legacy device.
 type fakeDevice struct {
-	t    *testing.T
-	ln   net.Listener
-	done chan struct{}
+	t  *testing.T
+	ln net.Listener
 
 	// LockStep caps the device at one concurrent connection when true
 	// (models fragile legacy devices); unlimited when false.
 	LockStep bool
 
-	served atomic.Int64 // completed request/response cycles
-	active atomic.Int64 // currently open device connections
+	// RespondDelay makes the device take this long to answer each
+	// request (models slow devices; exercises the fairness queue).
+	RespondDelay time.Duration
+
+	served   atomic.Int64 // completed request/response cycles
+	active   atomic.Int64 // currently open device connections
+	accepted atomic.Int64 // total accepted connections (incl. LockStep-refused)
+
+	mu   sync.Mutex
+	open map[net.Conn]struct{} // live device connections (for Close)
+
+	done chan struct{}
+	once sync.Once
 }
 
 func newFakeDevice(t *testing.T) *fakeDevice {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return newFakeDeviceCfg(t, fakeDeviceCfg{})
+}
+
+// fakeDeviceCfg carries the test knobs for a fake device; all fields are
+// applied BEFORE the device starts serving (no post-construction races).
+type fakeDeviceCfg struct {
+	LockStep     bool
+	RespondDelay time.Duration
+	OnAddr       string // listen on this address instead of 127.0.0.1:0
+}
+
+func newFakeDeviceCfg(t *testing.T, cfg fakeDeviceCfg) *fakeDevice {
+	t.Helper()
+	listen := cfg.OnAddr
+	if listen == "" {
+		listen = "127.0.0.1:0"
+	}
+	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		t.Fatalf("fake device listen: %v", err)
 	}
-	f := &fakeDevice{t: t, ln: ln, done: make(chan struct{})}
+	f := &fakeDevice{
+		t:            t,
+		ln:           ln,
+		done:         make(chan struct{}),
+		open:         make(map[net.Conn]struct{}),
+		LockStep:     cfg.LockStep,
+		RespondDelay: cfg.RespondDelay,
+	}
 	go f.serve()
 	t.Cleanup(f.Close)
 	return f
@@ -50,15 +86,35 @@ func (f *fakeDevice) Served() int64 { return f.served.Load() }
 // Active returns the number of currently open device connections.
 func (f *fakeDevice) Active() int64 { return f.active.Load() }
 
-// Close stops the listener and drops open device connections.
-func (f *fakeDevice) Close() {
-	select {
-	case <-f.done:
-		return
-	default:
+// Accepted returns the total number of connections the device accepted
+// over the test's lifetime (including LockStep-refused ones).
+func (f *fakeDevice) Accepted() int64 { return f.accepted.Load() }
+
+// trackConn adds/removes conn from the open-connections set (for Close to
+// force-close live device connections, like a powered-off device).
+func (f *fakeDevice) trackConn(conn net.Conn, add bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if add {
+		f.open[conn] = struct{}{}
+	} else {
+		delete(f.open, conn)
 	}
-	close(f.done)
-	f.ln.Close()
+}
+
+// Close stops the listener, force-closes live device connections, and is
+// idempotent — models the device losing power mid-operation.
+func (f *fakeDevice) Close() {
+	f.once.Do(func() {
+		close(f.done)
+		f.ln.Close()
+		f.mu.Lock()
+		for c := range f.open {
+			c.Close()
+		}
+		f.open = nil
+		f.mu.Unlock()
+	})
 }
 
 func (f *fakeDevice) serve() {
@@ -79,11 +135,17 @@ func (f *fakeDevice) serve() {
 func (f *fakeDevice) handle(conn net.Conn) {
 	defer conn.Close()
 	f.active.Add(1)
+	f.accepted.Add(1)
+	f.trackConn(conn, true)
 	if f.LockStep && f.active.Load() > 1 {
 		f.active.Add(-1)
+		f.trackConn(conn, false)
 		return // fragile device: refuse concurrent connection
 	}
-	defer f.active.Add(-1)
+	defer func() {
+		f.active.Add(-1)
+		f.trackConn(conn, false)
+	}()
 
 	hdr := make([]byte, mbtcp.HeaderLen)
 	for {
@@ -97,6 +159,9 @@ func (f *fakeDevice) handle(conn net.Conn) {
 		pdu := make([]byte, length-1)
 		if _, err := io.ReadFull(conn, pdu); err != nil {
 			return
+		}
+		if f.RespondDelay > 0 {
+			time.Sleep(f.RespondDelay)
 		}
 		resp := f.respond(hdr, pdu)
 		if resp == nil {

@@ -43,11 +43,14 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 3 — gateway core complete. `internal/proxy`:
+**Current state: milestone 4 — multiplexing proven. `internal/proxy`:
 front-leg listener, per-client lock-step loop, upstream connection with
 reconnect/backoff, stale-response discard, unit-ID remap, IP allow-list
-gate, read-only policy, connection cap. In-Go fake device e2e under
-`-race` (5 tests) + full suite green.**
+gate, read-only policy, race-free connection cap. Concurrency e2e under
+`-race` (11 tests): 8 clients × 25 reads multiplex onto exactly ONE
+upstream connection (LockStep device), fairness under 100ms/request
+device, idle/stalled client isolation, cap enforcement (2/2 split),
+device-outage re-dial recovery, goroutine-leak regression.**
 
 | Milestone | Status |
 |---|---|
@@ -55,8 +58,8 @@ gate, read-only policy, connection cap. In-Go fake device e2e under
 | `internal/mbtcp`: MBAP header build/parse (single parser, fuzz-ready), ADU cap, unit-ID types | done |
 | `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | YAML done (flags mode lands with the CLI milestone) |
 | Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | done |
-| Multiplexing + fairness + backpressure (goroutine-leak regression test) | pending (core serialization + conn cap in place) |
-| ACLs + read-only policy + shielding limits (conn cap, rate limit) | pending |
+| Multiplexing + fairness + backpressure (goroutine-leak regression test) | done (rate limit still open, tracked with ACL row) |
+| ACLs + read-only policy + shielding limits (conn cap, rate limit) | conn cap + read-only done; rate limit pending |
 | Observability (Prometheus + zap) | pending |
 | CLI: `validate` / `selftest` / flags mode / `version` | pending |
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | pending |
@@ -64,8 +67,9 @@ gate, read-only policy, connection cap. In-Go fake device e2e under
 
 ### Verification targets (from the plan)
 
-- Milestone 1 acceptance phrased as: **"two clients can read one fake device
-  through the box, reliably, under load."**
+- Milestone 4 acceptance met: **8 clients × 25 reads through the box onto
+  a fragile single-connection device — exactly one upstream connection,
+  all correct under `-race`.**
 - Testing bar (every commit): build + vet + `go test ./... -race` clean.
 - Adversarial: garbage datagrams never kill the listener, oversized ADUs
   rejected, late/duplicate/mismatched transaction responses discarded.
@@ -200,6 +204,13 @@ or set `-timeout` on `go test` (network tests would hang without one).
   `NewList(entries)` returns nil for empty (no restriction); `Allowed(ip)`
   is nil-receiver safe (nil = allow all). Read-only rejection is a
   proxy-generated exception 0x01 — the device never sees the write.
+- **Connection cap must be one atomic decision** (`gateway.admit`):
+  `clients.Add(1)` IS the admission (allowed while new value <= cap);
+  rejecting decrements. Never Load-then-Add across the decision or
+  increment in the spawned handler goroutine — a burst of concurrent
+  dials then slips past `max_clients` before handlers start (real race,
+  caught by TestGatewayConnCapFriendly burst test). ACL check decrements
+  on rejection too.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,

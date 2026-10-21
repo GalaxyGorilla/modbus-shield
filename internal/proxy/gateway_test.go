@@ -60,6 +60,13 @@ func readReg(t *testing.T, front string) (uint16, error) {
 		return 0, err
 	}
 	defer conn.Close()
+	return readOn(t, conn)
+}
+
+// readOn sends one register-0x0100 read on an open front-leg connection
+// and returns the register value.
+func readOn(t *testing.T, conn net.Conn) (uint16, error) {
+	t.Helper()
 	adu, err := mbtcp.NewADU(0x1234, 1, []byte{3, 0x01, 0x00, 0x00, 0x01})
 	if err != nil {
 		return 0, err
@@ -67,13 +74,17 @@ func readReg(t *testing.T, front string) (uint16, error) {
 	if _, err := conn.Write(adu.Frame()); err != nil {
 		return 0, err
 	}
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	resp, err := mbtcp.ReadADU(conn)
 	if err != nil {
 		return 0, err
 	}
 	if resp.Header.TransactionID != 0x1234 || resp.Header.UnitID != 1 {
 		return 0, fmt.Errorf("correlation failed: %+v", resp.Header)
+	}
+	if resp.IsException() {
+		code, _ := resp.ExceptionCode()
+		return 0, fmt.Errorf("device exception: code=%d", code)
 	}
 	return binary.BigEndian.Uint16(resp.PDU[2:4]), nil
 }

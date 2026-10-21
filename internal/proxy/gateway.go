@@ -55,7 +55,6 @@ func (g *gateway) Serve(ln net.Listener) error {
 		if !g.admit(conn) {
 			continue
 		}
-		g.clients.Add(1)
 		go func() {
 			defer g.clients.Add(-1)
 			g.handleClient(conn)
@@ -64,9 +63,14 @@ func (g *gateway) Serve(ln net.Listener) error {
 }
 
 // admit applies the shielding limits and ACL gate to a fresh connection.
-// It returns false when the connection was rejected (and closed).
+// The connection is counted as part of the cap decision (atomic Add
+// returns the new value), so a burst of concurrent dials cannot slip
+// past max_clients before handler goroutines start. Returns false when
+// the connection was rejected (and closed).
 func (g *gateway) admit(conn net.Conn) bool {
-	if n := g.clients.Load(); n >= g.maxClients {
+	// n includes this connection: allowed while n <= max_clients.
+	if n := g.clients.Add(1); n > g.maxClients {
+		g.clients.Add(-1)
 		g.log.Warnf("gateway %s: rejecting %s: connection limit (%d) reached",
 			g.dev.Name, conn.RemoteAddr(), g.maxClients)
 		conn.Close()
@@ -77,6 +81,7 @@ func (g *gateway) admit(conn net.Conn) bool {
 		if ip == nil || !g.allow.Allowed(ip) {
 			g.log.Warnf("gateway %s: rejecting %s: not in allow-list",
 				g.dev.Name, conn.RemoteAddr())
+			g.clients.Add(-1)
 			conn.Close()
 			return false
 		}
