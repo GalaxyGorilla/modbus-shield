@@ -19,13 +19,13 @@ import (
 
 // healthRegisterMapVersion is bumped whenever the register layout below
 // changes meaning. Clients can detect the layout via register 1.
-const healthRegisterMapVersion = 1
+const healthRegisterMapVersion = 2
 
 // healthMagic identifies the health endpoint (ASCII "MS").
 const healthMagic = 0x4D53
 
 // healthRegCount is the number of health registers (addresses 0..N-1).
-const healthRegCount = 18
+const healthRegCount = 19
 
 // Register map (0-based addresses, 16-bit big-endian, FC3/FC4):
 //
@@ -46,6 +46,7 @@ const healthRegCount = 18
 //	15     read-only policy (1 = on, 0 = off)
 //	16     max_clients
 //	17     rate_per_sec (0 = unlimited)
+//	18     read-cache hits (16-bit wrap; 0 when cache disabled)
 
 // healthRegistry holds the per-gateway health counters. All methods are
 // nil-receiver safe: call sites stay unchanged when health is disabled.
@@ -61,6 +62,7 @@ type healthRegistry struct {
 	upstreamErrs  atomicU16
 	staleDiscards atomicU16
 	reconnects    atomicU16
+	cacheHits     atomicU16
 }
 
 func newHealthRegistry() *healthRegistry {
@@ -76,6 +78,7 @@ func (h *healthRegistry) incRate()          { if h != nil { h.reqRate.add(1) } }
 func (h *healthRegistry) incUpstreamError() { if h != nil { h.upstreamErrs.add(1) } }
 func (h *healthRegistry) incStale()         { if h != nil { h.staleDiscards.add(1) } }
 func (h *healthRegistry) incReconnect()     { if h != nil { h.reconnects.add(1) } }
+func (h *healthRegistry) incCacheHit()      { if h != nil { h.cacheHits.add(1) } }
 
 // serveHealth answers one request addressed to the health unit-ID.
 // Only FC3 (read holding) and FC4 (read input) are valid; both return
@@ -163,6 +166,8 @@ func (g *gateway) healthRegister(addr int) uint16 {
 		return uint16(g.dev.MaxClients)
 	case 17:
 		return uint16(g.dev.RatePerSec)
+	case 18:
+		return h.cacheHits.get()
 	}
 	return 0 // unreachable: bounds checked in serveHealth
 }

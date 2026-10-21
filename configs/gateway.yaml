@@ -55,6 +55,9 @@ devices:
     # rtu_over_tcp: true         # device leg speaks bare Modbus RTU frames
                                   # (serial-to-TCP converter without MBAP;
                                   # the front leg stays Modbus TCP)
+    # read_cache_ttl_ms: 5000    # optional (B8): serve repeated FC 1-4
+                                  # reads from memory for this long; the
+                                  # device is only contacted on a miss
 
   # Second device behind the same box, unrestricted reads/writes.
   - listen_addr: ":5021"

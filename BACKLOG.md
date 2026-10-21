@@ -6,10 +6,22 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
 | # | Item | Technology / notes |
 |---|---|---|
 | B3 | **Transparent bump-in-the-wire mode** — L2 splice, zero client/device reconfiguration, cable-splice install; intercept port 502 inline, pass other traffic | **florianl/go-nfqueue** first candidate (MIT, netfilter queue API, needs CAP_NET_ADMIN); cilium/ebpf = later performance path (linux amd64/arm64 only). Design spike needed; Linux-only |
-| B8 | **Opt-in TTL read cache** — serve repeated reads from memory to shield very slow devices from heavy polling | per-listener, TTL-based, OFF by default (staleness surprises in SCADA) |
 
 ## Done (kept for reference)
 
+- ~~B8 opt-in TTL read cache~~ — **done**: `read_cache_ttl_ms: N`
+  (or `--read-cache-ttl-ms N`) serves repeated FC 1-4 reads from memory,
+  shielding very slow devices from heavy polling. Cache key = client
+  unit ID + request PDU (per-client, remap-independent); only
+  non-exception read responses are stored; cached responses carry the
+  client's fresh transaction ID, skip the rate limiter and generate NO
+  device traffic; writes and exceptions are never cached; mutex-guarded
+  map with lazy TTL expiry. Metric outcome `cache_hit` + health register
+  18 (cache hits, 16-bit wrap; register map version bumped to 2). 0 =
+  disabled (fully transparent semantics). Verified by unit tests
+  (nil-guard, hit/expiry/key isolation, concurrent access) + e2e
+  (device sees 1 of 2 identical reads; different register reaches
+  device; writes never cached) + real-binary smoke.
 - ~~B7 RTU-over-TCP device side~~ — **done**: `rtu_over_tcp: true`
   (or `--rtu-over-tcp`) makes the device leg speak bare Modbus RTU
   frames (unit address + PDU + CRC16, MODBUS over Serial Line V1.02) for

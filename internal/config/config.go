@@ -112,6 +112,16 @@ type Device struct {
 	// back. Works with device_tls (the RTU bytes ride inside the TLS
 	// tunnel).
 	RTUOverTCP bool `yaml:"rtu_over_tcp"`
+
+	// ReadCacheTTLMs, when set, enables the opt-in read cache (B8):
+	// successful FC 1-4 responses are served from memory for this long
+	// (keyed by unit ID + request PDU), shielding very slow devices from
+	// heavy polling. Cached responses skip the rate limiter and generate
+	// NO device traffic — the device is only contacted on a miss. Writes,
+	// exceptions and health reads are never cached. 0 = disabled (fully
+	// transparent semantics). NOTE: a cache makes responses stale by up
+	// to the TTL; only enable it for data that changes slowly.
+	ReadCacheTTLMs int `yaml:"read_cache_ttl_ms"`
 }
 
 // MBAPSConfig configures the mbaps role-authorization mode (B12). The
@@ -280,6 +290,9 @@ func (c *Config) Validate() error {
 		if d.IdleTimeoutMs < 0 {
 			return fmt.Errorf("config: %s: idle_timeout_ms must be >= 0", label)
 		}
+		if d.ReadCacheTTLMs < 0 {
+			return fmt.Errorf("config: %s: read_cache_ttl_ms must be >= 0", label)
+		}
 		for j, cidr := range d.Allow {
 			if !validIPorCIDR(cidr) {
 				return fmt.Errorf("config: %s: allow[%d]: invalid IP or CIDR %q", label, j, cidr)
@@ -379,6 +392,14 @@ func (d *Device) MBAPSRoleRights(role string) ([]int, bool) {
 // HasRTUOverTCP reports whether the device leg speaks bare Modbus RTU
 // frames (rtu_over_tcp; B7).
 func (d *Device) HasRTUOverTCP() bool { return d.RTUOverTCP }
+
+// HasReadCache reports whether the opt-in read cache (B8) is enabled.
+func (d *Device) HasReadCache() bool { return d.ReadCacheTTLMs > 0 }
+
+// ReadCacheTTL returns the read-cache TTL (0 = disabled).
+func (d *Device) ReadCacheTTL() time.Duration {
+	return time.Duration(d.ReadCacheTTLMs) * time.Millisecond
+}
 
 // Validate checks a TLS configuration block: cert and key are
 // both-or-neither, client_ca requires cert/key, and all configured files

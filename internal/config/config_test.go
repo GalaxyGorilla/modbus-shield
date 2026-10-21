@@ -579,6 +579,47 @@ devices:
 	}
 }
 
+func TestReadCacheTTParsing(t *testing.T) {
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+    read_cache_ttl_ms: 1500
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasReadCache() {
+		t.Fatal("HasReadCache = false, want true")
+	}
+	if got := d.ReadCacheTTL(); got != 1500*time.Millisecond {
+		t.Fatalf("ReadCacheTTL = %v, want 1.5s", got)
+	}
+	// Disabled variant.
+	cfg2, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+`))
+	if err != nil {
+		t.Fatalf("parse minimal: %v", err)
+	}
+	d2 := cfg2.Devices[0]
+	if d2.HasReadCache() || d2.ReadCacheTTL() != 0 {
+		t.Fatal("read cache should default to disabled")
+	}
+	// Negative is rejected.
+	if _, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+    read_cache_ttl_ms: -1
+`)); err == nil || !contains(err.Error(), "read_cache_ttl_ms must be >= 0") {
+		t.Fatalf("negative ttl: err = %v", err)
+	}
+}
+
 func TestShieldingDelayValidateErrors(t *testing.T) {
 	cases := []struct{ name, yaml, want string }{
 		{"negative delay", `

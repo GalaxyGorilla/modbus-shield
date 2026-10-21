@@ -57,6 +57,10 @@ type gateway struct {
 	// extension) to their allowed function codes (B12); nil when the
 	// mbaps mode is disabled.
 	mbaps map[string]map[uint8]bool
+
+	// cache serves repeated read responses from memory (B8, opt-in via
+	// read_cache_ttl_ms); nil when disabled.
+	cache *readCache
 }
 
 func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
@@ -106,6 +110,7 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		log:          log,
 		allow:        allow,
 		maxClients:   int64(dev.MaxClients),
+		cache:        newReadCache(dev.ReadCacheTTL()),
 		lim:          newRateLimiter(dev.RatePerSec),
 		tlsCfg:       tlsCfg,
 		met:          metricsOrNop(met),
@@ -299,6 +304,25 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
 	}
 
+	// Read cache (B8): repeated read requests within the TTL are answered
+	// from memory — no device traffic and no rate-token consumption on a
+	// hit. The cache key uses the CLIENT's unit ID and request PDU
+	// (pre-remap), so remapped devices are cached per-client-unit.
+	if g.cache != nil && isReadFC(req.FunctionCode()) {
+		if pdu := g.cache.lookup(clientUnit, req.PDU); pdu != nil {
+			g.log.Debugf("gateway %s: [conn %d] %s: cache hit FC %d",
+				g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode())
+			g.met.ObserveRequest(g.dev.Name, outcomeCacheHit)
+			g.health.incCacheHit()
+			adu, err := mbtcp.NewADU(req.Header.TransactionID, clientUnit, pdu)
+			if err != nil { // unreachable: cached PDUs came from valid ADUs
+				g.log.Errorf("gateway %s: building cache response: %v", g.dev.Name, err)
+				return g.exception(req, clientUnit, mbtcp.ExceptionGatewayTargetFail)
+			}
+			return adu
+		}
+	}
+
 	// Unit-ID remap: the device always sees the configured unit ID.
 	if g.dev.HasUnitRemap() {
 		req.Header.UnitID = g.dev.UpstreamUnitID()
@@ -320,6 +344,12 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 	g.health.incForwarded()
 	if g.dev.HasUnitRemap() {
 		resp.Header.UnitID = clientUnit
+	}
+	// Store successful read responses in the cache (B8). Keyed by the
+	// CLIENT's unit ID (pre-remap) + request PDU; the response PDU is
+	// remap-independent (unit ID lives in the header).
+	if g.cache != nil && isReadFC(req.FunctionCode()) && !resp.IsException() {
+		g.cache.store(clientUnit, req.PDU, resp.PDU)
 	}
 	return resp
 }
@@ -424,6 +454,7 @@ const (
 	outcomeExceptionPolicy = "exception_policy" // read-only blocked write
 	outcomeExceptionRate   = "exception_rate"   // rate limiter rejection
 	outcomeExceptionAuthZ  = "exception_authz"  // mbaps role denial (B12)
+	outcomeCacheHit        = "cache_hit"        // served from the read cache (B8)
 )
 
 // metricsOrNop normalizes a nil metrics hook to a concurrency-safe no-op.

@@ -59,7 +59,9 @@ speaks sd_notify (`READY=1` + `WATCHDOG=1` pings, internal/watchdog) and
 the deploy unit is `Type=notify` + `WatchdogSec=30`; `mbaps:` enforces
 per-role function-code rights from client-cert roles over mandatory
 mTLS; `rtu_over_tcp` speaks bare Modbus RTU on the device leg for
-serial-to-TCP converters (front leg stays Modbus TCP). Full suite green
+serial-to-TCP converters (front leg stays Modbus TCP); `read_cache_ttl_ms`
+serves repeated read responses from memory (opt-in B8, off = fully
+transparent). Full suite green
 under `-race`; staticcheck + govulncheck clean.**
 
 | Milestone | Status |
@@ -84,6 +86,7 @@ under `-race`; staticcheck + govulncheck clean.**
 | B11: systemd watchdog (`Type=notify` + `WatchdogSec`, sd_notify pings) | done (internal/watchdog + tests + real-binary smoke; deploy unit updated) |
 | B12: mbaps role authorization (`mbaps:` block + `--mbaps-role`, per-role FC rights over mTLS) | done (config/proxy/CLI/tests + examples/mbaps.md + real-binary smoke) |
 | B7: RTU-over-TCP device side (`rtu_over_tcp` + `--rtu-over-tcp`) | done (mbtcp RTU framing + upstream translation + tests + real-binary smoke) |
+| B8: opt-in TTL read cache (`read_cache_ttl_ms` + `--read-cache-ttl-ms`) | done (proxy/cache.go + tests + real-binary smoke; health register 18, map v2) |
 
 ### Verification targets (from the plan)
 
@@ -102,7 +105,7 @@ under `-race`; staticcheck + govulncheck clean.**
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP + RTU framing (mbtcp.go, rtu.go + tests + FuzzParseADU/FuzzReadADU + corpora)
 internal/config/           YAML config + single-device flags mode (config.go + tests)
-internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go + fakedevice e2e
+internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go, cache.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
 internal/watchdog/         sd_notify wrapper (READY + watchdog pings; no-ops outside systemd)
@@ -415,6 +418,22 @@ or set `-timeout` on `go test` (network tests would hang without one).
   response shapes DO carry it. Verified by unit tests (CRC known
   answers, round-trips, gap fallback via net.Pipe, deadline clamp) +
   e2e (read/exception/unit-ID/remap) + real-binary smoke.
+- **Read-cache contract (B8)** (`internal/proxy/cache.go`):
+  `read_cache_ttl_ms: N` (or `--read-cache-ttl-ms N`) enables an opt-in
+  TTL cache for read responses; 0 = disabled (nil-guard, same pattern
+  as the rate limiter/allow-list). Cache key = CLIENT unit ID + request
+  PDU (pre-remap; per-client, remap-independent since the unit ID lives
+  in the header). Only non-exception responses to FC 1-4 (`isReadFC`)
+  are stored; writes, exceptions, health reads never cached. In
+  `serve()` the lookup sits AFTER the rate limiter (a hit consumes no
+  rate token and generates NO device traffic; outcome label
+  `cache_hit`, health register 18 via `incCacheHit`); the store sits
+  after a successful exchange, guarded by `isReadFC` &&
+  `!resp.IsException()`. Cached responses are rebuilt with
+  `NewADU(client txn, client unit, cached pdu)` — clients always see
+  their own fresh transaction ID. Entry values are copied on insert and
+  return; mutex-guarded map, lazy TTL expiry. 0 = fully transparent
+  semantics.
 - **systemd watchdog contract (B11)** (`internal/watchdog`, wrapper on
   coreos/go-systemd/v22 `daemon`): `Interval()` = `SdWatchdogEnabled`
   (0 when not under systemd), `NotifyReady()` sends `READY=1`,
