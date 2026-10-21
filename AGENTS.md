@@ -43,16 +43,14 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 6 — CLI complete. `cmd/modbus-shield`:
-`gateway` (YAML --config or full direct-flags mode, runs until
-SIGINT/SIGTERM with graceful `Runner.Stop`, metrics server wired via
---metrics-addr or config metrics_listen), `validate` (pre-apply check,
---json report), `selftest` (validate + real FC3 Modbus read probe
-directly to each configured device — an exception response still proves
-liveness; 2 attempts; --probe=false skips the network), `genpsk`,
-`version`. Config flags mode landed here (single-device Config from
-flags). Full suite green under `-race`; staticcheck + govulncheck
-clean; selftest smoke-verified against a live fake device.**
+**Current state: milestone 7 — fuzz + interop complete. `internal/mbtcp`
+has two fuzz targets (FuzzParseADU + FuzzReadADU streaming) with committed
+regression corpora re-run in every `go test`; `scripts/interop-modbus.sh`
+drives the gateway with real mbpoll (FC3/FC4 reads, FC6 write, exception
+pass-through, unit-ID addressing, 8 concurrent clients) — PASS rc=0 on
+this box (mbpoll not preinstalled; exit 77 = skip). Graceful-shutdown fix:
+`Serve` now returns nil on `net.ErrClosed` so SIGTERM exits silently.
+Full suite green under `-race`; staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -64,7 +62,7 @@ clean; selftest smoke-verified against a live fake device.**
 | ACLs + read-only policy + shielding limits (conn cap, rate limit) | done (all: read-only, conn cap, rate limit) |
 | Observability (Prometheus + zap) | done |
 | CLI: `validate` / `selftest` / flags mode / `version` | done (gateway/validate/selftest/genpsk/version) |
-| Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | pending |
+| Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | done (FuzzParseADU + FuzzReadADU, corpora committed; interop PASS rc=0) |
 | Docs: README (why/deployment shapes/decision guidance), examples, systemd units | pending |
 
 ### Verification targets (from the plan)
@@ -82,13 +80,13 @@ clean; selftest smoke-verified against a live fake device.**
 
 ```
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
-internal/mbtcp/            MBAP header build/parse (mbtcp.go, fuzz_test.go + unit tests)
+internal/mbtcp/            MBAP header build/parse (mbtcp.go + unit tests + FuzzParseADU/FuzzReadADU + testdata/fuzz corpora)
 internal/config/           YAML config + single-device flags mode (config.go + tests)
 internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
 configs/                   example YAML templates
-scripts/                   smoke + interop scripts (mbpoll), SBOM entry point
+scripts/                   interop-modbus.sh (real mbpoll), fakedevice.py, smoke scripts, SBOM entry point
 deploy/                    hardened systemd unit files
 examples/                  copy-paste deployment walkthroughs
 ```
@@ -254,6 +252,28 @@ or set `-timeout` on `go test` (network tests would hang without one).
   `*http.Server` for metrics in a plain local var; nil-safe
   `ShutdownMetrics(nil)`. Tests set flag values through the flag
   pointers (exactly as pflag Parse would), never via reflection.
+- **Fuzz targets** (`internal/mbtcp`): `FuzzParseADU` (strict single-frame
+  parser) and `FuzzReadADU` (`fuzz_stream_test.go`, streaming entry point
+  with pipelined frames + chunked delivery via io.MultiReader). Invariants
+  for both: rejections must be documented sentinels (or bare
+  io.EOF/io.ErrUnexpectedEOF wrappers for the streaming target), accepted
+  frames must re-frame and re-parse byte-exactly. Regression corpora live
+  in `internal/mbtcp/testdata/fuzz/<FuzzName>/` (go test fuzz v1 format)
+  and re-run in every plain `go test`. Fuzzing locally: `go test
+  ./internal/mbtcp/ -run '^$' -fuzz <Name> -fuzztime 15s`; interesting
+  new seeds land in the build cache — copy them into testdata to commit.
+- **Interop** (`scripts/interop-modbus.sh`): drives the built gateway with
+  real mbpoll (epsilonrt/mbpoll + libmodbus) against
+  `scripts/fakedevice.py`. Covers FC3/FC4 reads, FC6 write, exception
+  pass-through (mbpoll prints "Illegal data address" and exits 1 on a
+  device exception — the script requires that), unit-ID addressing
+  (`-a 17`), 8 concurrent mbpolls (multiplexing), and a chain-alive check.
+  Exit 77 when mbpoll is missing (`MBPOLL_BIN` overrides the binary path).
+  mbpoll refs are 1-based: register 0x0100 = `-r 257`.
+- **Graceful shutdown**: `gateway.Serve` returns **nil** on
+  `errors.Is(err, net.ErrClosed)` (Stop() closed the listener = clean
+  shutdown, not an error). Any other Accept error is fatal to Run. Without
+  this, every SIGTERM logged an ERROR stack trace from main.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,

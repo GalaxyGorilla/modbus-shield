@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -59,7 +60,10 @@ func (g *gateway) Serve(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			return err // listener closed or fatal; caller decides
+			if errors.Is(err, net.ErrClosed) {
+				return nil // Stop() closed the listener: clean shutdown
+			}
+			return err // listener fatal; caller decides
 		}
 		if !g.admit(conn) {
 			g.met.IncConnRejected()
