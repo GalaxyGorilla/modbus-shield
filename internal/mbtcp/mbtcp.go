@@ -223,6 +223,17 @@ func (a ADU) ExceptionCode() (code uint8, ok bool) {
 	return a.PDU[1], true
 }
 
+// Exception codes (MODBUS Application Protocol Specification V1.1b3).
+// The proxy generates these locally to reject requests without involving
+// the device: 0x01 for policy rejections (read-only), 0x0A/0x0B for
+// upstream/gateway errors (the codes the spec reserves for gateways).
+const (
+	ExceptionIllegalFunction   uint8 = 0x01 // Illegal Function
+	ExceptionIllegalDataAddr   uint8 = 0x02 // Illegal Data Address
+	ExceptionGatewayPathUnavbl uint8 = 0x0A // Gateway Path Unavailable
+	ExceptionGatewayTargetFail uint8 = 0x0B // Gateway Target Device Failed To Respond
+)
+
 // ExceptionPDU builds the two-byte PDU of a Modbus exception response:
 // the requested function code with the MSB set, plus the exception code.
 // The proxy uses this to reject requests locally (read-only policy,

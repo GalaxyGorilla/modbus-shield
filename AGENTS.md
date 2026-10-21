@@ -43,18 +43,19 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 2 — `internal/config` complete. YAML config
-(multi-device, read-only, allow-list, shielding limits, unit remap) with
-full validation; first dependency added (`gopkg.in/yaml.v3` v3.0.1,
-govulncheck clean). All gates green.**
+**Current state: milestone 3 — gateway core complete. `internal/proxy`:
+front-leg listener, per-client lock-step loop, upstream connection with
+reconnect/backoff, stale-response discard, unit-ID remap, IP allow-list
+gate, read-only policy, connection cap. In-Go fake device e2e under
+`-race` (5 tests) + full suite green.**
 
 | Milestone | Status |
 |---|---|
 | Scaffold: dirs, go.mod, .gitignore, Makefile, AGENTS.md, BACKLOG.md | done |
 | `internal/mbtcp`: MBAP header build/parse (single parser, fuzz-ready), ADU cap, unit-ID types | done |
 | `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | YAML done (flags mode lands with the CLI milestone) |
-| Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | pending |
-| Multiplexing + fairness + backpressure (goroutine-leak regression test) | pending |
+| Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | done |
+| Multiplexing + fairness + backpressure (goroutine-leak regression test) | pending (core serialization + conn cap in place) |
 | ACLs + read-only policy + shielding limits (conn cap, rate limit) | pending |
 | Observability (Prometheus + zap) | pending |
 | CLI: `validate` / `selftest` / flags mode / `version` | pending |
@@ -77,8 +78,8 @@ govulncheck clean). All gates green.**
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP header build/parse (mbtcp.go, fuzz_test.go + unit tests)
 internal/config/           YAML config (config.go + tests); flags overrides land with CLI
-internal/proxy/            gateway wiring: listener, client loops, upstream pool
-internal/acl/              client IP allow/deny + function-code policy (read-only)
+internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go + fakedevice e2e
+internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics
 configs/                   example YAML templates
 scripts/                   smoke + interop scripts (mbpoll), SBOM entry point
@@ -176,6 +177,29 @@ or set `-timeout` on `go test` (network tests would hang without one).
   enforces: ≥1 device, host:port syntax, unique listen addrs,
   non-negative limits, valid IP/CIDR entries. Accessors:
   `Device.RequestTimeout()`, `HasUnitRemap()`, `UpstreamUnitID()`.
+- **`internal/proxy` gateway contract**: one `gateway` per config device
+  = front-leg `Serve` loop + per-client `handleClient` lock-step loop
+  (read one ADU -> forward -> write one ADU). All client traffic
+  multiplexes over ONE `upstream` connection (legacy devices accept few
+  connections); exchanges are serialized by `upstream.mu`, one in-flight
+  request, responses matched by transaction ID, late/stale responses
+  discarded (stream stays frame-aligned, skipping is safe). ANY exchange
+  error drops the device connection (post-timeout stream state is
+  unknown); next exchange re-dials with 100ms->1s bounded backoff and
+  `ErrDeviceUnreachable` (clients get exception 0x0B) when the deadline
+  expires. Client-side errors only kill that client's connection; the
+  listener never dies. Proxy-generated exceptions carry the client's
+  original txn-ID + unit ID. Unit-ID remap: request rewritten to
+  `device_unit_id`, response rewritten back to the client's unit ID.
+  `Runner` owns gateways: `NewRunner(cfg, log)` -> `Run()` (binds all,
+  first bind error aborts) -> `Stop()`; `bound` channel signals when
+  listeners are up (tests wait on it before dialing). `Logger` is a
+  minimal zap-agnostic interface injected by main.
+- **`internal/acl` contract**: `IsWrite(fc)` classifies write FCs
+  (5, 6, 15, 16, 21, 22, 23; reads + diagnostics + FIFO 24 allowed).
+  `NewList(entries)` returns nil for empty (no restriction); `Allowed(ip)`
+  is nil-receiver safe (nil = allow all). Read-only rejection is a
+  proxy-generated exception 0x01 — the device never sees the write.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,
