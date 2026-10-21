@@ -209,7 +209,8 @@ anchor.
 
 ## Documentation
 
-- [`examples/`](examples/) — copy-paste deployment walkthroughs.
+- [`examples/`](examples/) — copy-paste deployment walkthroughs
+  (gateway, multi-device, production operations).
 - [`configs/`](configs/) — YAML template.
 - [`deploy/`](deploy/) — systemd unit file.
 - [`BACKLOG.md`](BACKLOG.md) — things to implement later.

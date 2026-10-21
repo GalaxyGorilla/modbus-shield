@@ -46,7 +46,8 @@ serial ports.
 **Current state: v1 feature-complete — all milestones done. Docs
 milestone landed: README (mission/why, decision guidance naming
 modbus-proxy/VPN alternatives, feature + metrics tables, appliance
-deployment), examples/gateway.md walkthrough, deploy/
+deployment), examples walkthroughs (gateway, multi-device,
+operations — the day-2 production guide), deploy/
 modbus-shield-gateway.service (hardened systemd unit), `make interop`
 target. Full suite green under `-race`; staticcheck + govulncheck
 clean; interop PASS rc=0.**
@@ -62,7 +63,7 @@ clean; interop PASS rc=0.**
 | Observability (Prometheus + zap) | done |
 | CLI: `validate` / `selftest` / flags mode / `version` | done (gateway/validate/selftest/genpsk/version) |
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | done (FuzzParseADU + FuzzReadADU, corpora committed; interop PASS rc=0) |
-| Docs: README (why/deployment shapes/decision guidance), examples, systemd units | done (README + examples/gateway.md + deploy unit + make interop) |
+| Docs: README (why/deployment shapes/decision guidance), examples, systemd units | done (README + examples: gateway/multi-device/operations + deploy unit + make interop) |
 
 ### Verification targets (from the plan)
 
@@ -87,7 +88,7 @@ internal/observ/           zap logging + Prometheus metrics (observ.go + tests; 
 configs/                   example YAML templates
 scripts/                   interop-modbus.sh (real mbpoll), fakedevice.py, smoke scripts, SBOM entry point
 deploy/                    hardened systemd unit files
-examples/                  copy-paste deployment walkthroughs
+examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide)
 ```
 
 (All directories populated as of v1 feature-complete; see individual
