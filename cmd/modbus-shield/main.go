@@ -23,6 +23,7 @@ import (
 	"github.com/GalaxyGorilla/modbus-shield/internal/mbtcp"
 	"github.com/GalaxyGorilla/modbus-shield/internal/observ"
 	"github.com/GalaxyGorilla/modbus-shield/internal/proxy"
+	"github.com/GalaxyGorilla/modbus-shield/internal/watchdog"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
 )
@@ -461,6 +462,13 @@ func runGateway(args []string) int {
 	}
 	log.Info("starting modbus-shield", zap.Int("devices", len(cfg.Devices)))
 
+	// systemd watchdog (B11): announce READY=1 and ping WATCHDOG=1 while
+	// running so a wedged process is restarted by the host. No-ops when
+	// not running under systemd (no NOTIFY_SOCKET env).
+	if wd := watchdog.Interval(); wd > 0 {
+		log.Info("systemd watchdog enabled", zap.Duration("interval", wd))
+	}
+
 	r, err := proxy.NewRunner(cfg, observ.AsProxyLogger(log), met)
 	if err != nil {
 		log.Error("build runner", zap.Error(err))
@@ -479,6 +487,14 @@ func runGateway(args []string) int {
 		case <-done:
 		}
 	}()
+	// Watchdog pings start after the runner is built; stop them with the
+	// same done channel the signal watcher uses.
+	if wd := watchdog.Interval(); wd > 0 {
+		go watchdog.Start(wd, done)
+	}
+	if _, err := watchdog.NotifyReady(); err != nil {
+		log.Warn("sd_notify READY failed", zap.Error(err))
+	}
 	err = r.Run()
 	close(done)
 	observ.ShutdownMetrics(metricsSrv)

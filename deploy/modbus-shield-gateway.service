@@ -14,7 +14,9 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+WatchdogSec=30
+# READY=1 + WATCHDOG=1 pings are sent by the binary (internal/watchdog).
 ExecStart=/usr/local/bin/modbus-shield gateway --config /etc/modbus-shield/gateway.yaml
 Restart=on-failure
 RestartSec=5

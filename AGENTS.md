@@ -46,14 +46,17 @@ serial ports.
 **Current state: v1 feature-complete + B1 (TLS front leg) + B2 (two-proxy
 secured line) + B4 (health-via-Modbus) + B5 (inter-request pacing) + B6
 (idle client timeout) + B9 (connection-ID logging) + B10 (multiple
-listeners per device). Per-device `tls:` block terminates TLS on the
-front leg; `device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`)
-secures the upstream leg; `health_unit_id` exposes 18 proxy health
-registers on a virtual unit-ID; `request_delay_ms` paces picky devices;
-`idle_timeout_ms` reaps dead clients; every client and device log line
-carries a per-gateway `[conn N]` ID; `extra_listen` adds front doors
-that share one upstream connection and all shielding limits. Full suite
-green under `-race`; staticcheck + govulncheck clean.**
+listeners per device) + B11 (systemd watchdog). Per-device `tls:` block
+terminates TLS on the front leg; `device_tls:` block
+(`ca_cert`/`server_name`/`cert`/`key`) secures the upstream leg;
+`health_unit_id` exposes 18 proxy health registers on a virtual unit-ID;
+`request_delay_ms` paces picky devices; `idle_timeout_ms` reaps dead
+clients; every client and device log line carries a per-gateway
+`[conn N]` ID; `extra_listen` adds front doors that share one upstream
+connection and all shielding limits; the gateway speaks sd_notify
+(`READY=1` + `WATCHDOG=1` pings, internal/watchdog) and the deploy unit
+is `Type=notify` + `WatchdogSec=30`. Full suite green under `-race`;
+staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -74,6 +77,7 @@ green under `-race`; staticcheck + govulncheck clean.**
 | B6: idle client timeout (`idle_timeout_ms`) | done (handleClient read deadline + tests) |
 | B9: connection-ID logging (`[conn N]` in client + device log lines) | done (connSeq counter, exchange takes connID, smoke-connid.sh) |
 | B10: multiple listeners per device (`extra_listen` + `--extra-listen`) | done (config/proxy/CLI/tests; one upstream shared by all doors) |
+| B11: systemd watchdog (`Type=notify` + `WatchdogSec`, sd_notify pings) | done (internal/watchdog + tests + real-binary smoke; deploy unit updated) |
 
 ### Verification targets (from the plan)
 
@@ -95,6 +99,7 @@ internal/config/           YAML config + single-device flags mode (config.go + t
 internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
+internal/watchdog/         sd_notify wrapper (READY + watchdog pings; no-ops outside systemd)
 configs/                   example YAML templates
 scripts/                   interop-modbus.sh (real mbpoll), fakedevice.py, smoke scripts, SBOM entry point
 deploy/                    hardened systemd unit files
@@ -149,6 +154,8 @@ or set `-timeout` on `go test` (network tests would hang without one).
 - `github.com/prometheus/client_golang v1.23.2` (milestone 5; govulncheck-clean)
 - `go.uber.org/zap v1.27.0` (milestone 5; govulncheck-clean)
 - `github.com/spf13/pflag v1.0.10` (milestone 6 CLI; snmp-shield-pinned)
+- `github.com/coreos/go-systemd/v22 v22.7.0` (B11 watchdog; only the
+  `daemon` package — sd_notify; govulncheck-clean)
 - Modbus protocol handling is implemented in-house on `encoding/binary`
   (full parser control for fuzzability); a client lib (e.g. grid-x/modbus)
   is only considered for the `selftest` probe — to be decided at that
@@ -355,6 +362,19 @@ or set `-timeout` on `go test` (network tests would hang without one).
   error → exception 0x0B; the device never sees rejected TLS.
   Test-lesson reuse: `tlsChain` PKI helper shared; second `tlsChain`
   call yields an unrelated CA for bad-CA tests.
+- **systemd watchdog contract (B11)** (`internal/watchdog`, wrapper on
+  coreos/go-systemd/v22 `daemon`): `Interval()` = `SdWatchdogEnabled`
+  (0 when not under systemd), `NotifyReady()` sends `READY=1`,
+  `Start(interval, done)` pings `WATCHDOG=1` every interval/2 until done.
+  `runGateway` logs "systemd watchdog enabled" when `Interval() > 0`,
+  starts the ping goroutine with the shared `done` channel, and calls
+  `NotifyReady()` right before `r.Run()` (READY only means "serving").
+  All functions no-op outside systemd (no NOTIFY_SOCKET env). sd_notify
+  uses **SOCK_DGRAM** — tests fake systemd with `net.ListenUnixgram` +
+  `ReadFromUnix` (NOT stream sockets; `Accept` does not exist there).
+  Real caught bug: READY=1 was initially missing (only pings were sent)
+  — the smoke test with a fake systemd socket caught it; always verify
+  BOTH READY and pings. Deploy unit: `Type=notify`, `WatchdogSec=30`.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,

@@ -36,8 +36,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now modbus-shield-gateway
 ```
 
-The unit runs as the `modbus-shield` user with `Restart=on-failure`
-(restarts forever with 5 s pause), `ProtectSystem=strict` (read-only
+The unit runs as the `modbus-shield` user with `Type=notify` and
+`WatchdogSec=30`: the binary sends `READY=1` on startup and pings
+`WATCHDOG=1` every 15 s, so systemd restarts a wedged process instead of
+leaving the device unreachable. `Restart=on-failure` (restarts forever
+with 5 s pause), `ProtectSystem=strict` (read-only
 filesystem), no new privileges, and `CAP_NET_BIND_SERVICE` as the only
 capability — so it may bind port 502 and nothing else. Tuning the
 listener address is a config change, not a unit change.

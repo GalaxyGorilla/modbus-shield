@@ -198,8 +198,12 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
 - **Static binary** — `make release` produces a stripped, cgo-free
   static binary suitable for any Linux appliance (Pi, DIN-rail SBC).
 - **systemd unit** — [`deploy/`](deploy/) ships a hardened unit file
-  (`Restart=on-failure`, `ProtectSystem=strict`,
-  `CAP_NET_BIND_SERVICE` for privileged ports).
+  (`Type=notify`, `WatchdogSec=30`, `Restart=on-failure`,
+  `ProtectSystem=strict`, `CAP_NET_BIND_SERVICE` for privileged ports).
+- **systemd watchdog** — the binary speaks sd_notify: `READY=1` on
+  startup and `WATCHDOG=1` pings while running (internal/watchdog), so a
+  wedged process is restarted by the host. The box IS the device's
+  network path — it must never hang silently. No-ops outside systemd.
 - **Supply chain** — `make sbom` produces SPDX + CycloneDX SBOMs of the
   release binary into `dist/`; `make vulnscan` matches them against
   NVD/GHSA/OSV and fails on HIGH-severity findings. Both exit 77 (skip)
