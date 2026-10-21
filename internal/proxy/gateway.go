@@ -54,9 +54,18 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 			return nil, fmt.Errorf("device %s: %w", dev.Name, err)
 		}
 	}
+	var devTLS *tls.Config
+	if dev.HasDeviceTLS() {
+		devTLS, err = deviceTLSConfigFor(dev)
+		if err != nil {
+			return nil, fmt.Errorf("device %s: %w", dev.Name, err)
+		}
+	}
+	up := newUpstream(dev.DeviceAddr, dev.Name, log, met)
+	up.tlsDial = devTLS
 	return &gateway{
 		dev:        dev,
-		up:         newUpstream(dev.DeviceAddr, dev.Name, log, met),
+		up:         up,
 		log:        log,
 		allow:      allow,
 		maxClients: int64(dev.MaxClients),
@@ -240,6 +249,39 @@ func tlsConfigFor(d config.Device) (*tls.Config, error) {
 		}
 		cfg.ClientCAs = pool
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
+}
+
+// deviceTLSConfigFor builds the upstream (device-side) TLS client config
+// from a device entry (two-proxy secured line): TLS 1.2 minimum, custom
+// CA pool when ca_cert is set, server-name override, and optional client
+// certificate for mTLS toward the far box.
+func deviceTLSConfigFor(d config.Device) (*tls.Config, error) {
+	t := d.DeviceTLS
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	if t.CACert != "" {
+		pem, err := os.ReadFile(t.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("read CA cert: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA cert %s: no valid certificates found", t.CACert)
+		}
+		cfg.RootCAs = pool
+	}
+	if t.ServerName != "" {
+		cfg.ServerName = t.ServerName
+	}
+	if t.Cert != "" && t.Key != "" {
+		cert, err := tls.LoadX509KeyPair(t.Cert, t.Key)
+		if err != nil {
+			return nil, fmt.Errorf("load client cert/key: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
 	}
 	return cfg, nil
 }

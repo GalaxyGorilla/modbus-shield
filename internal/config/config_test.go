@@ -332,3 +332,72 @@ func contains(s, sub string) bool {
 		return false
 	})()
 }
+
+func TestDeviceTLSParsing(t *testing.T) {
+	dir := t.TempDir()
+	ca := filepath.Join(dir, "ca.pem")
+	cert := filepath.Join(dir, "c.pem")
+	key := filepath.Join(dir, "k.pem")
+	for _, f := range []string{ca, cert, key} {
+		if err := os.WriteFile(f, []byte("placeholder"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+    device_tls:
+      ca_cert: "` + ca + `"
+      server_name: "farbox.example"
+      cert: "` + cert + `"
+      key: "` + key + `"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasDeviceTLS() {
+		t.Fatal("HasDeviceTLS = false")
+	}
+	if d.DeviceTLS.CACert == "" || d.DeviceTLS.ServerName == "" || d.DeviceTLS.Cert == "" || d.DeviceTLS.Key == "" {
+		t.Errorf("device_tls block = %+v", d.DeviceTLS)
+	}
+}
+
+func TestDeviceTLSValidateErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		tls  string
+		want string
+	}{
+		{"cert without key", `
+    device_tls:
+      cert: "/tmp/c.pem"
+`, "device_tls: cert and key must be set together"},
+		{"key without cert", `
+    device_tls:
+      key: "/tmp/k.pem"
+`, "device_tls: cert and key must be set together"},
+		{"missing ca file", `
+    device_tls:
+      ca_cert: "/nonexistent/ca.pem"
+`, "no such file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := `
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.0.0.1:502"
+` + tc.tls
+			_, err := Parse([]byte(yaml))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.want)
+			}
+			if !contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}

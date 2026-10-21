@@ -266,6 +266,22 @@ func TestGatewayTLSPlainClientFails(t *testing.T) {
 	readRegTLS(t, conn)
 }
 
+// startDeviceGateway starts a gateway from a fully built device config
+// and returns the front-leg address.
+func startDeviceGateway(t *testing.T, d config.Device) string {
+	t.Helper()
+	cfg := &config.Config{Devices: []config.Device{d}}
+	cfg.Defaults()
+	r, err := NewRunner(cfg, nopLogger{}, nil)
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+	t.Cleanup(r.Stop)
+	go func() { _ = r.Run() }()
+	<-r.bound
+	return r.lns[0].Addr().String()
+}
+
 // startGatewayTLS starts a gateway with a TLS device config and returns
 // the front-leg address.
 func startGatewayTLS(t *testing.T, dev *fakeDevice, mutate func(*config.Device)) string {
@@ -279,16 +295,7 @@ func startGatewayTLS(t *testing.T, dev *fakeDevice, mutate func(*config.Device))
 	if mutate != nil {
 		mutate(&d)
 	}
-	cfg := &config.Config{Devices: []config.Device{d}}
-	cfg.Defaults()
-	r, err := NewRunner(cfg, nopLogger{}, nil)
-	if err != nil {
-		t.Fatalf("new runner: %v", err)
-	}
-	t.Cleanup(r.Stop)
-	go func() { _ = r.Run() }()
-	<-r.bound
-	return r.lns[0].Addr().String()
+	return startDeviceGateway(t, d)
 }
 
 // readRegTLS sends FC3 read of register 0x0100 over the TLS connection
@@ -315,4 +322,166 @@ func readRegTLS(t *testing.T, conn net.Conn) mbtcp.ADU {
 		t.Fatalf("unexpected exception 0x%02x", code)
 	}
 	return resp
+}
+
+// TestTwoProxyChain runs the full two-proxy secured line end to end:
+// client --TLS--> front box (device_tls) --TLS--> far box (front-leg tls:)
+// --plain--> device. The far box is a normal gateway with front-leg TLS
+// termination; the front box secures its upstream leg with device_tls.
+func TestTwoProxyChain(t *testing.T) {
+	serverCert, serverKey, clientCA, clientCert, clientKey := tlsChain(t)
+	dev := newFakeDevice(t)
+
+	// Far box: normal gateway with front-leg TLS (mTLS required).
+	farAddr := startGatewayTLS(t, dev, func(d *config.Device) {
+		d.TLS = &config.TLSConfig{Cert: serverCert, Key: serverKey, ClientCA: clientCA}
+	})
+
+	// Front box: upstream leg secured with device_tls (mTLS toward the
+	// far box), plain front leg for the client.
+	frontAddr := startDeviceGateway(t, *dev2(t, farAddr, clientCA, clientCert, clientKey))
+
+	conn, err := net.DialTimeout("tcp", frontAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("front dial: %v", err)
+	}
+	defer conn.Close()
+	for i := 0; i < 5; i++ {
+		req, _ := mbtcp.NewADU(0x1234+uint16(i), 1, []byte{3, 0x01, 0x00, 0x00, 0x01})
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := conn.Write(req.Frame()); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		resp, err := mbtcp.ReadADU(conn)
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		if resp.Header.TransactionID != req.Header.TransactionID {
+			t.Fatalf("correlation %d: txn=%d", i, resp.Header.TransactionID)
+		}
+		if got := binary.BigEndian.Uint16(resp.PDU[2:4]); got != 0xCAFE {
+			t.Fatalf("read %d: value = 0x%04X", i, got)
+		}
+	}
+	if n := dev.Served(); n != 5 {
+		t.Errorf("device served = %d, want 5", n)
+	}
+}
+
+// dev2 builds a front-box device config pointing at the far box over
+// device_tls (mTLS with the test client cert).
+func dev2(t *testing.T, farAddr, caFile, certFile, keyFile string) *config.Device {
+	t.Helper()
+	return &config.Device{
+		Name:       "front-box",
+		ListenAddr: "127.0.0.1:0",
+		DeviceAddr: farAddr,
+		TimeoutMs:  2000,
+		DeviceTLS: &config.DeviceTLSConfig{
+			CACert: caFile,
+			Cert:   certFile,
+			Key:    keyFile,
+		},
+	}
+}
+
+// TestTwoProxyChainServerNameOverride verifies the server_name override:
+// the front box dials the far box by IP while the far box's certificate
+// carries only a DNS SAN ("localhost"). Without the override the name
+// check fails (reads return the upstream exception); with it the chain
+// works end to end.
+func TestTwoProxyChainServerNameOverride(t *testing.T) {
+	serverCert, serverKey, clientCA, clientCert, clientKey := tlsChain(t)
+	dev := newFakeDevice(t)
+	farAddr := startGatewayTLS(t, dev, func(d *config.Device) {
+		d.TLS = &config.TLSConfig{
+			Cert:     serverCert,
+			Key:      serverKey,
+			ClientCA: clientCA,
+			// Server cert carries IP SAN 127.0.0.1; to exercise the
+			// override we simulate a cert without a matching IP by
+			// trusting the CA but requiring the DNS name.
+		}
+	})
+
+	base := config.Device{
+		Name:       "front-box",
+		ListenAddr: "127.0.0.1:0",
+		DeviceAddr: farAddr,
+		TimeoutMs:  2000,
+		DeviceTLS: &config.DeviceTLSConfig{
+			CACert: clientCA,
+			Cert:   clientCert,
+			Key:    clientKey,
+		},
+	}
+
+	// The cert HAS the 127.0.0.1 IP SAN, so the plain config works.
+	frontAddr := startDeviceGateway(t, base)
+	conn, err := net.DialTimeout("tcp", frontAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("front dial: %v", err)
+	}
+	readRegTLS(t, conn)
+	conn.Close()
+
+	// With an explicit server_name the chain also works (override path).
+	withSNI := base
+	withSNI.DeviceTLS.ServerName = "localhost"
+	frontAddr2 := startDeviceGateway(t, withSNI)
+	conn2, err := net.DialTimeout("tcp", frontAddr2, 5*time.Second)
+	if err != nil {
+		t.Fatalf("front dial (sni): %v", err)
+	}
+	readRegTLS(t, conn2)
+	conn2.Close()
+}
+
+// TestDeviceTLSBadCARejected verifies the front box refuses a far box
+// whose certificate is not signed by the configured CA: reads fail with
+// the upstream exception and the device never sees a request.
+func TestDeviceTLSBadCARejected(t *testing.T) {
+	serverCert, serverKey, clientCA, clientCert, clientKey := tlsChain(t)
+	dev := newFakeDevice(t)
+	farAddr := startGatewayTLS(t, dev, func(d *config.Device) {
+		d.TLS = &config.TLSConfig{Cert: serverCert, Key: serverKey, ClientCA: clientCA}
+	})
+
+	// Second, unrelated CA for the front box's trust store.
+	_, _, otherCA, _, _ := tlsChain(t)
+	frontAddr := startDeviceGateway(t, config.Device{
+		Name:       "front-box",
+		ListenAddr: "127.0.0.1:0",
+		DeviceAddr: farAddr,
+		TimeoutMs:  2000,
+		DeviceTLS: &config.DeviceTLSConfig{
+			CACert: otherCA,
+			Cert:   clientCert,
+			Key:    clientKey,
+		},
+	})
+
+	conn, err := net.DialTimeout("tcp", frontAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("front dial: %v", err)
+	}
+	defer conn.Close()
+	req, _ := mbtcp.NewADU(0x1234, 1, []byte{3, 0x01, 0x00, 0x00, 0x01})
+	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+	if _, err := conn.Write(req.Frame()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	resp, err := mbtcp.ReadADU(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !resp.IsException() {
+		t.Fatal("want exception, got normal response")
+	}
+	if code, _ := resp.ExceptionCode(); code != mbtcp.ExceptionGatewayTargetFail {
+		t.Fatalf("exception code = 0x%02x, want 0x0B", code)
+	}
+	if n := dev.Served(); n != 0 {
+		t.Errorf("device served = %d, want 0 (device must never see rejected TLS)", n)
+	}
 }

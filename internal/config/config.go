@@ -58,6 +58,14 @@ type Device struct {
 	// device-side wire stays plain Modbus TCP). With ClientCA set, client
 	// certificates signed by that CA are required (mTLS).
 	TLS *TLSConfig `yaml:"tls"`
+
+	// DeviceTLS, when set, secures the upstream leg with TLS (client
+	// side): the box dials the device address over TLS instead of plain
+	// TCP. This is the front box of a two-proxy secured line — the far
+	// box is a gateway with a front-leg `tls:` block exposing the local
+	// device. CACert verifies the far box's certificate (empty = system
+	// roots); Cert/Key present a client certificate for mTLS.
+	DeviceTLS *DeviceTLSConfig `yaml:"device_tls"`
 }
 
 // TLSConfig configures front-leg TLS termination for a device.
@@ -68,6 +76,23 @@ type TLSConfig struct {
 	// ClientCA, when set, is a PEM file of CA certificates; clients must
 	// present a certificate signed by one of them (mTLS).
 	ClientCA string `yaml:"client_ca"`
+}
+
+// DeviceTLSConfig configures the upstream (device-side) TLS leg: the box
+// acts as the TLS client when dialing the device address. This is the
+// near side of a two-proxy secured line.
+type DeviceTLSConfig struct {
+	// CACert, when set, is a PEM file of CA certificates used to verify
+	// the device-side (far box) server certificate. Empty = system roots.
+	CACert string `yaml:"ca_cert"`
+	// ServerName, when set, overrides the TLS server-name check (use when
+	// the far box presents a certificate for a different name; IP
+	// addresses need no override when they are in the cert's IP SANs).
+	ServerName string `yaml:"server_name"`
+	// Cert and Key, when set together, present a client certificate to
+	// the far box (mTLS on the upstream leg).
+	Cert string `yaml:"cert"`
+	Key  string `yaml:"key"`
 }
 
 // LogConfig selects logging behavior.
@@ -186,6 +211,9 @@ func (c *Config) Validate() error {
 		if err := d.TLS.Validate(); err != nil {
 			return fmt.Errorf("config: %s: %w", label, err)
 		}
+		if err := d.DeviceTLS.Validate(); err != nil {
+			return fmt.Errorf("config: %s: %w", label, err)
+		}
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
@@ -224,6 +252,10 @@ func (d *Device) HasTLS() bool { return d.TLS != nil }
 // configured for the front leg.
 func (d *Device) HasClientCA() bool { return d.HasTLS() && d.TLS.ClientCA != "" }
 
+// HasDeviceTLS reports whether the upstream (device-side) TLS leg is
+// configured: the box dials the device over TLS (two-proxy secured line).
+func (d *Device) HasDeviceTLS() bool { return d.DeviceTLS != nil }
+
 // Validate checks a TLS configuration block: cert and key are
 // both-or-neither, client_ca requires cert/key, and all configured files
 // must be readable at validate time.
@@ -243,6 +275,27 @@ func (t *TLSConfig) Validate() error {
 		}
 		if _, err := os.ReadFile(f); err != nil {
 			return fmt.Errorf("tls: %s: %w", f, err)
+		}
+	}
+	return nil
+}
+
+// Validate checks a device TLS (upstream leg) configuration block:
+// client cert and key are both-or-neither, and all configured files must
+// be readable at validate time.
+func (t *DeviceTLSConfig) Validate() error {
+	if t == nil {
+		return nil
+	}
+	if (t.Cert == "") != (t.Key == "") {
+		return fmt.Errorf("device_tls: cert and key must be set together")
+	}
+	for _, f := range []string{t.CACert, t.Cert, t.Key} {
+		if f == "" {
+			continue
+		}
+		if _, err := os.ReadFile(f); err != nil {
+			return fmt.Errorf("device_tls: %s: %w", f, err)
 		}
 	}
 	return nil

@@ -5,7 +5,6 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
 
 | # | Item | Technology / notes |
 |---|---|---|
-| B2 | **Two-proxy secured line** — `[clients] ⇄ proxy ⇄ TLS tunnel ⇄ proxy ⇄ [device]` | mutual X.509 via stdlib `crypto/tls`; Go stdlib lacks external PSK → evaluate pion/tls (snmp-shield precedent: pion/dtls) |
 | B3 | **Transparent bump-in-the-wire mode** — L2 splice, zero client/device reconfiguration, cable-splice install; intercept port 502 inline, pass other traffic | **florianl/go-nfqueue** first candidate (MIT, netfilter queue API, needs CAP_NET_ADMIN); cilium/ebpf = later performance path (linux amd64/arm64 only). Design spike needed; Linux-only |
 | B4 | **Health via Modbus itself** — expose proxy health (connections, request/error counters, upstream state) as a virtual unit-ID with readable registers | in-house on `internal/mbtcp`; plant SCADA monitors the box with tooling it already has (analog of snmp-shield's SNMP metrics interface) |
 | B5 | **Inter-request delay** — optional pacing toward picky legacy devices | trivial timer in the upstream loop |
@@ -23,6 +22,13 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
   flags; TLS 1.2 minimum, mTLS via `RequireAndVerifyClientCert`; lazy
   handshake in the handler goroutine; e2e tests (TLS, mTLS
   reject/accept, plain-client resilience).
+- ~~B2 Two-proxy secured line~~ — **done**: per-device `device_tls:`
+  config block (`ca_cert`/`server_name`/`cert`/`key`) +
+  `--device-tls-*` flags; the front box dials the device over TLS, the
+  far side is a second gateway with front-leg `tls:` (no new
+  subcommand); eager TLS dial with handshake inside the dial deadline;
+  mTLS toward the far box via stdlib X.509; e2e two-box chain tests
+  (mTLS hops, server_name override, bad-CA rejection).
 - ~~B15 Interop test client~~ — **done**: `scripts/interop-modbus.sh` +
   `make interop` drive the gateway with real mbpoll (reads, writes,
   exception pass-through, unit-ID addressing, concurrent clients); exit 77

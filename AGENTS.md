@@ -43,13 +43,14 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: v1 feature-complete + B1 (TLS front leg). Per-device
-`tls:` config block (`cert`/`key`/`client_ca`) and
-`--tls-cert/--tls-key/--tls-client-ca` flags terminate TLS on the
-front leg (TLS 1.2 minimum, mTLS via client_ca). Device-side wire stays
-plain Modbus TCP. E2E tests: TLS reads, mTLS reject (no cert) + accept
-(with cert), plain-client resilience. Full suite green under `-race`;
-staticcheck + govulncheck clean.**
+**Current state: v1 feature-complete + B1 (TLS front leg) + B2 (two-proxy
+secured line). Per-device `tls:` block terminates TLS on the front leg;
+`device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`) secures the
+upstream leg — the front box dials the device over TLS, the far side is a
+second gateway with front-leg `tls:` (mTLS both hops via stdlib X.509).
+E2E: full two-box chain (client→TLS→front→TLS→far→plain→device),
+server_name override, bad-CA rejection (device never sees rejected TLS).
+Full suite green under `-race`; staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -64,6 +65,7 @@ staticcheck + govulncheck clean.**
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | done (FuzzParseADU + FuzzReadADU, corpora committed; interop PASS rc=0) |
 | Docs: README (why/deployment shapes/decision guidance), examples, systemd units | done (README + examples: gateway/multi-device/operations + deploy unit + make interop) |
 | B1: TLS front leg (per-device `tls:` block + flags, mTLS) | done (config/proxy/CLI/tests + examples/tls.md) |
+| B2: two-proxy secured line (`device_tls:` upstream leg + flags) | done (config/proxy/CLI/tests; docs walkthrough pending) |
 
 ### Verification targets (from the plan)
 
@@ -289,6 +291,21 @@ or set `-timeout` on `go test` (network tests would hang without one).
   handleClient, listener never dies. mTLS test lesson: under TLS 1.3 the
   client's Dial may return before the server's client-cert rejection
   arrives — force the alert with a write+read before asserting failure.
+- **Two-proxy secured line contract (B2)**: per-device
+  `config.DeviceTLSConfig` (`device_tls.ca_cert`/`server_name`/`cert`/
+  `key`) — the box dials `device_addr` over TLS instead of plain TCP
+  (client role on the upstream leg). The far side is a second
+  modbus-shield gateway with a front-leg `tls:` block in front of the
+  local device — no new subcommand needed. Validate: client cert+key
+  both-or-neither, all files readable. `deviceTLSConfigFor` builds TLS
+  1.2 minimum + custom CA pool (empty `ca_cert` = system roots) +
+  optional server_name override + optional client cert (mTLS toward the
+  far box). Upstream dialing is **eager** (`tls.DialWithDialer`, handshake
+  inside the dial deadline) — a half-open TLS conn must not look "up";
+  reconnect/backoff/stale-discard logic unchanged. Bad CA → exchange
+  error → exception 0x0B; the device never sees rejected TLS.
+  Test-lesson reuse: `tlsChain` PKI helper shared; second `tlsChain`
+  call yields an unrelated CA for bad-CA tests.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,

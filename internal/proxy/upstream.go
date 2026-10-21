@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -33,6 +34,10 @@ type upstream struct {
 	name string // config device name (metrics + logs)
 	log  Logger
 	met  Metrics
+
+	// tlsDial, when set, dials the device address over TLS (device_tls
+	// config; two-proxy secured line). nil = plain TCP.
+	tlsDial *tls.Config
 
 	mu   sync.Mutex
 	conn net.Conn
@@ -92,12 +97,22 @@ func (u *upstream) ensureConn(deadline time.Time) (net.Conn, error) {
 		if dialTimeout > time.Second {
 			dialTimeout = time.Second
 		}
-		conn, err := net.DialTimeout("tcp", u.addr, dialTimeout)
+		dialer := &net.Dialer{Timeout: dialTimeout}
+		var conn net.Conn
+		var err error
+		if u.tlsDial != nil {
+			// TLS handshake included in the dial deadline (eager, not
+			// lazy — the connection is unusable without a completed
+			// handshake, and a half-open conn must not look "up").
+			conn, err = tls.DialWithDialer(dialer, "tcp", u.addr, u.tlsDial)
+		} else {
+			conn, err = dialer.Dial("tcp", u.addr)
+		}
 		if err == nil {
 			u.conn = conn
 			u.met.IncReconnect()
 			u.met.SetDeviceUp(u.name, true)
-			u.log.Debugf("device %s: connected", u.addr)
+			u.log.Debugf("device %s: connected (tls=%v)", u.addr, u.tlsDial != nil)
 			return conn, nil
 		}
 		sleep := backoff

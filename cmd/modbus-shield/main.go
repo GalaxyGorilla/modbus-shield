@@ -91,6 +91,10 @@ type cliFlags struct {
 	tlsCert      *string
 	tlsKey       *string
 	tlsClientCA  *string
+	devTLSCA     *string
+	devTLSSNI    *string
+	devTLSCert   *string
+	devTLSKey    *string
 	metricsAddr  *string
 	logLevel     *string
 	logFormat    *string
@@ -115,6 +119,10 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.tlsCert = fs.String("tls-cert", "", "front-leg TLS server certificate (PEM; enables TLS termination)")
 	c.tlsKey = fs.String("tls-key", "", "front-leg TLS server key (PEM)")
 	c.tlsClientCA = fs.String("tls-client-ca", "", "client certificate CA (PEM; enables mTLS: clients must present a signed cert)")
+	c.devTLSCA = fs.String("device-tls-ca", "", "upstream TLS CA (PEM; verifies the far box's certificate; empty = system roots)")
+	c.devTLSSNI = fs.String("device-tls-server-name", "", "upstream TLS server-name override (when the far box presents a different name)")
+	c.devTLSCert = fs.String("device-tls-cert", "", "upstream TLS client certificate (PEM; mTLS toward the far box)")
+	c.devTLSKey = fs.String("device-tls-key", "", "upstream TLS client key (PEM)")
 	c.metricsAddr = fs.String("metrics-addr", "", "Prometheus metrics listen address (e.g. 127.0.0.1:9202)")
 	c.logLevel = fs.String("log-level", "info", "log level: debug, info, warn, error")
 	c.logFormat = fs.String("log-format", "console", "log format: console or json")
@@ -154,6 +162,14 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 			Cert:     *c.tlsCert,
 			Key:      *c.tlsKey,
 			ClientCA: *c.tlsClientCA,
+		}
+	}
+	if *c.devTLSCA != "" || *c.devTLSSNI != "" || *c.devTLSCert != "" || *c.devTLSKey != "" {
+		dev.DeviceTLS = &config.DeviceTLSConfig{
+			CACert:     *c.devTLSCA,
+			ServerName: *c.devTLSSNI,
+			Cert:       *c.devTLSCert,
+			Key:        *c.devTLSKey,
 		}
 	}
 	cfg := &config.Config{
@@ -463,6 +479,8 @@ Usage (flags, no config file — plug and play):
       [--read-only] [--allow <ip|cidr>]... [--max-clients <n>] \
       [--rate-per-sec <n>] [--timeout-ms <ms>] [--device-unit-id <id>] \
       [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]] \
+      [--device-tls-ca <pem> [--device-tls-server-name <name>] \
+       [--device-tls-cert <pem> --device-tls-key <pem>]] \
       [--metrics-addr <addr>] [--log-level <lvl>] [--log-format <fmt>]
 
 The gateway is a single box in front of the legacy device: N clients are
@@ -471,7 +489,11 @@ only one), writes can be blocked (--read-only), clients restricted
 (--allow) and the device shielded from polling storms (--rate-per-sec).
 With --tls-cert/--tls-key the front leg terminates TLS (add
 --tls-client-ca for mTLS); the device-side wire stays plain Modbus TCP.
-Plain Modbus TCP on both wires — the device notices nothing.
+With --device-tls-* the upstream leg is secured instead: the box dials
+the device over TLS — the far side is a second modbus-shield gateway
+whose front leg terminates TLS in front of the local device (two-proxy
+secured line). Plain Modbus TCP on both end wires — the device notices
+nothing.
 
 Other commands:
   modbus-shield validate [--config <file> | same flags as gateway] [--json]
