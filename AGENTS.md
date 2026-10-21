@@ -43,26 +43,17 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: v1 feature-complete + B1 (TLS front leg) + B2 (two-proxy
-secured line) + B4 (health-via-Modbus) + B5 (inter-request pacing) + B6
-(idle client timeout) + B9 (connection-ID logging) + B10 (multiple
-listeners per device) + B11 (systemd watchdog) + B12 (mbaps role
-authorization) + B7 (RTU-over-TCP device side). Per-device `tls:` block
-terminates TLS on the front leg;
-`device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`) secures the
-upstream leg; `health_unit_id` exposes 18 proxy health registers on a
-virtual unit-ID; `request_delay_ms` paces picky devices;
-`idle_timeout_ms` reaps dead clients; every client and device log line
-carries a per-gateway `[conn N]` ID; `extra_listen` adds front doors
-that share one upstream connection and all shielding limits; the gateway
-speaks sd_notify (`READY=1` + `WATCHDOG=1` pings, internal/watchdog) and
-the deploy unit is `Type=notify` + `WatchdogSec=30`; `mbaps:` enforces
-per-role function-code rights from client-cert roles over mandatory
-mTLS; `rtu_over_tcp` speaks bare Modbus RTU on the device leg for
-serial-to-TCP converters (front leg stays Modbus TCP); `read_cache_ttl_ms`
-serves repeated read responses from memory (opt-in B8, off = fully
-transparent). Full suite green
-under `-race`; staticcheck + govulncheck clean.**
+**Current state: BACKLOG COMPLETE.** All v1 milestones + B1–B12 + B15
+done. B3 (transparent bump-in-the-wire, Linux-only) landed last after a
+design spike (docs/b3-transparent-mode.md): `transparent: true` (or
+`--transparent`) forwards to the client's ORIGINAL destination from
+netfilter conntrack (`SO_ORIGINAL_DST`) per front-leg connection —
+cable-splice install with zero client/device reconfiguration;
+`scripts/setup-transparent.sh` installs the idempotent REDIRECT rule
+(never auto-run). **Fail-open by design**: a missing rule / bridging
+without redirecting flows traffic unproxied to the device (shielding
+bypassed) — documented loudly. Full suite green under `-race`;
+staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -87,6 +78,7 @@ under `-race`; staticcheck + govulncheck clean.**
 | B12: mbaps role authorization (`mbaps:` block + `--mbaps-role`, per-role FC rights over mTLS) | done (config/proxy/CLI/tests + examples/mbaps.md + real-binary smoke) |
 | B7: RTU-over-TCP device side (`rtu_over_tcp` + `--rtu-over-tcp`) | done (mbtcp RTU framing + upstream translation + tests + real-binary smoke) |
 | B8: opt-in TTL read cache (`read_cache_ttl_ms` + `--read-cache-ttl-ms`) | done (proxy/cache.go + tests + real-binary smoke; health register 18, map v2) |
+| B3: transparent bump-in-the-wire (`transparent: true` + `--transparent`, Linux-only) | done (origdst_linux.go + upstream per-conn target + tests + examples/transparent.md; design spike in docs/) |
 
 ### Verification targets (from the plan)
 
@@ -105,14 +97,14 @@ under `-race`; staticcheck + govulncheck clean.**
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP + RTU framing (mbtcp.go, rtu.go + tests + FuzzParseADU/FuzzReadADU + corpora)
 internal/config/           YAML config + single-device flags mode (config.go + tests)
-internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go, cache.go + fakedevice e2e
+internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go, cache.go, origdst_linux.go/origdst_other.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
 internal/watchdog/         sd_notify wrapper (READY + watchdog pings; no-ops outside systemd)
 configs/                   example YAML templates
 scripts/                   interop-modbus.sh (real mbpoll), fakedevice.py, smoke scripts, SBOM entry point
 deploy/                    hardened systemd unit files
-examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md, two-proxy.md, mbaps.md, health.md
+examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md, two-proxy.md, mbaps.md, health.md, transparent.md
 ```
 
 (All directories populated as of v1 feature-complete; see individual
@@ -447,6 +439,26 @@ or set `-timeout` on `go test` (network tests would hang without one).
   Real caught bug: READY=1 was initially missing (only pings were sent)
   — the smoke test with a fake systemd socket caught it; always verify
   BOTH READY and pings. Deploy unit: `Type=notify`, `WatchdogSec=30`.
+- **Transparent mode contract (B3)** (`internal/proxy/origdst_linux.go`,
+  build tag `linux`): `transparent: true` replaces the static
+  `device_addr` dial target with the client's ORIGINAL destination
+  recovered per front-leg connection via
+  `getsockopt(SOL_IP, SO_ORIGINAL_DST)` on the accepted socket
+  (`unix.Syscall6` + raw sockaddr parsing; `x/sys` was already in the
+  dep tree — no new dependency). `upstream` gains `origDST
+  func(net.Conn)(string,error)` + `origDSTConn`: `exchange(req, timeout,
+  connID, clientConn)` resolves the target under `u.mu` before
+  `ensureConn`; a changed client connection drops the previously dialed
+  device connection (one client conn ⇄ one device conn). Non-Linux
+  builds get a stub that errors cleanly (binary stays cross-platform).
+  `parseOrigDst` (sockaddr parsing) is unit-tested; `getsockoptOrigDst`
+  is the only untestable-without-netfilter part — e2e tests inject a
+  fake resolver into `up.origDST` (transparent gateway, per-connection
+  target re-dial, resolver-error → exception 0x0B + recovery).
+  **FAIL-OPEN by design**: missing rule = unproxied traffic; documented
+  in examples/transparent.md + docs/b3-transparent-mode.md (NFQUEUE
+  userspace mangling and eBPF rejected there). Requires CAP_NET_ADMIN;
+  rule script is idempotent and never auto-run.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,

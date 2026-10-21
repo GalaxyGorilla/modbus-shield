@@ -104,6 +104,11 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 	up.requestDelay = dev.RequestDelay()
 	up.rtuOverTCP = dev.HasRTUOverTCP()
 	up.setUpstreamHealth(health)
+	if dev.HasTransparent() {
+		// B3: the upstream target is the client's original destination
+		// from conntrack, resolved per front-leg connection.
+		up.origDST = originalDST
+	}
 	g := &gateway{
 		dev:          dev,
 		up:           up,
@@ -329,7 +334,7 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 	}
 
 	start := time.Now()
-	resp, err := g.up.exchange(req, g.dev.RequestTimeout(), connID)
+	resp, err := g.up.exchange(req, g.dev.RequestTimeout(), connID, conn)
 	g.met.ObserveLatency(g.dev.Name, time.Since(start))
 	if err != nil {
 		g.log.Warnf("gateway %s: [conn %d] %s: upstream error: %v",

@@ -770,3 +770,30 @@ devices:
 		})
 	}
 }
+
+// TestTransparentParsing checks the B3 transparent config flag: parse,
+// accessor, and that device_addr stays required (label only).
+func TestTransparentParsing(t *testing.T) {
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "legacy-plc:502"
+    transparent: true
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasTransparent() {
+		t.Fatal("HasTransparent = false, want true")
+	}
+	// device_addr still required when transparent is set.
+	_, err = Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    transparent: true
+`))
+	if err == nil {
+		t.Fatal("transparent without device_addr: want error, got nil")
+	}
+}

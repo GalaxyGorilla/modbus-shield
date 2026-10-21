@@ -61,6 +61,19 @@ type upstream struct {
 	// transaction ID and protocol ID are reconstructed (RTU has none).
 	rtuOverTCP bool
 
+	// origDST, when set, resolves the upstream target per CLIENT
+	// connection (B3 transparent mode): the client's conntrack
+	// SO_ORIGINAL_DST — the device IP it was actually dialing. nil =
+	// static addr from config. This is the only structural difference a
+	// transparent gateway has from a reverse-proxy gateway.
+	origDST func(conn net.Conn) (string, error)
+
+	// origDSTConn is the client connection the current device connection
+	// targets (transparent mode multiplexes one client connection's
+	// traffic onto its own device connection; see gateway.serve).
+	// Only meaningful when origDST != nil; guarded by mu.
+	origDSTConn net.Conn
+
 	mu   sync.Mutex
 	conn net.Conn
 
@@ -83,7 +96,9 @@ func (u *upstream) setUpstreamHealth(h *healthRegistry) {
 // timeout bounds the whole exchange (dial retries included). connID is
 // the front-leg connection ID (B9) that caused this exchange; it is
 // attached to device-side log lines so client and device logs correlate.
-func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64) (mbtcp.ADU, error) {
+// clientConn is the front-leg connection that produced req (only used in
+// transparent mode to resolve the per-connection original destination).
+func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64, clientConn net.Conn) (mbtcp.ADU, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
@@ -102,6 +117,32 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64)
 		}
 	}
 	u.lastRequest = time.Now()
+
+	// B3 transparent mode: resolve the upstream target from THIS client
+	// connection's conntrack entry. When the client connection changes
+	// (different front-leg connection), the previously dialed device
+	// connection belongs to a different client — drop it so the next
+	// dial targets the new client's original destination.
+	if u.origDST != nil {
+		if clientConn == nil {
+			return mbtcp.ADU{}, fmt.Errorf("transparent mode: no client connection for original-dst resolution")
+		}
+		if u.conn != nil && u.origDSTConn != clientConn {
+			u.drop(u.conn)
+		}
+		target, err := u.origDST(clientConn)
+		if err != nil {
+			return mbtcp.ADU{}, fmt.Errorf("transparent mode: %w", err)
+		}
+		u.origDSTConn = clientConn
+		if target != u.addr {
+			u.log.Debugf("device %s: [conn %d] transparent target %s", u.addr, connID, target)
+			u.addr = target
+			if u.conn != nil {
+				u.drop(u.conn)
+			}
+		}
+	}
 
 	conn, err := u.ensureConn(deadline)
 	if err != nil {

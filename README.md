@@ -84,9 +84,10 @@ It is intentionally opinionated about deployment and operations.
 | [Two-proxy secured line](examples/two-proxy.md) (B2) | `[N clients] ⇄ plain ⇄ box ⇄ TLS/mTLS ⇄ box ⇄ plain ⇄ [device]` | Clients and device in different segments/sites; the untrusted link between the boxes carries only TLS |
 | [Health via Modbus](examples/health.md) (B4) | `[SCADA] ⇄ modbus-shield ⇄ [device]` (health on a virtual unit-ID) | Plant SCADA monitors the box itself with the Modbus tooling it already has — no extra port or tooling |
 | [mbaps role authorization](examples/mbaps.md) (B12) | `[role clients] ⇄ mTLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Per-client function-code rights from certificate roles (MODBUS/TCP Security profile's role-based AuthZ on the front leg) |
+| [Transparent bump-in-the-wire](examples/transparent.md) (B3, Linux-only) | `[clients] --splice-- box --splice-- [device]` (clients keep dialing the device IP) | Cable-splice install: zero client/device reconfiguration; netfilter REDIRECT + conntrack original-dst; **fail-open** if the rule is missing |
 
-Planned (see [BACKLOG.md](BACKLOG.md)): transparent bump-in-the-wire
-(B3). Security note: the Modbus Organization publishes a TLS security
+Planned (see [BACKLOG.md](BACKLOG.md)): none — all backlog items are done.
+Security note: the Modbus Organization publishes a TLS security
 profile for Modbus/TCP ([MB-TCP-Security
 spec](https://www.modbus.org/file/secure/modbussecurityprotocol.pdf),
 "mbaps": TLS on port 802, mandatory mutual X.509 auth, role-based

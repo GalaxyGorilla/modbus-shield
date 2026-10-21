@@ -68,3 +68,9 @@ log:
   format: console    # console | json
 
 # metrics_listen: ":9202"  # uncomment to serve Prometheus metrics
+    # Transparent bump-in-the-wire mode (B3, Linux-only): forward to the
+    # client's ORIGINAL destination from conntrack (netfilter REDIRECT +
+    # SO_ORIGINAL_DST) instead of dialing device_addr. Zero client/device
+    # reconfiguration; see scripts/setup-transparent.sh + examples/transparent.md.
+    # FAIL-OPEN: a missing redirect rule flows traffic unproxied to the device.
+    # transparent: true

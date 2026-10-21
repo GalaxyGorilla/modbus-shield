@@ -237,7 +237,7 @@ func TestUpstreamStaleDiscardUnit(t *testing.T) {
 	defer u.close()
 
 	req, _ := mbtcp.NewADU(1, 1, []byte{3, 0x00, 0x00, 0x00, 0x01})
-	resp, err := u.exchange(req, 3*time.Second, 1)
+	resp, err := u.exchange(req, 3*time.Second, 1, nil)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
 	}

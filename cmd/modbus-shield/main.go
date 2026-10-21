@@ -93,6 +93,7 @@ type cliFlags struct {
 	idleTimeoutMs  *int
 	rtuOverTCP     *bool
 	readCacheTTL   *int
+	transparent    *bool
 	deviceUnitID *string
 	healthUnitID *string
 	tlsCert      *string
@@ -130,6 +131,7 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.healthUnitID = fs.String("health-unit-id", "", "virtual unit-ID exposing proxy health registers (0-255; disabled when unset)")
 	c.rtuOverTCP = fs.Bool("rtu-over-tcp", false, "device leg speaks bare Modbus RTU frames (serial-to-TCP converter without MBAP)")
 	c.readCacheTTL = fs.Int("read-cache-ttl-ms", 0, "serve repeated reads from memory for this long in ms (0 = disabled; device only contacted on miss)")
+	c.transparent = fs.Bool("transparent", false, "bump-in-the-wire mode: forward to the client's original destination from conntrack (Linux-only, needs a netfilter redirect rule; device_addr is used as label only)")
 	c.tlsCert = fs.String("tls-cert", "", "front-leg TLS server certificate (PEM; enables TLS termination)")
 	c.tlsKey = fs.String("tls-key", "", "front-leg TLS server key (PEM)")
 	c.tlsClientCA = fs.String("tls-client-ca", "", "client certificate CA (PEM; enables mTLS: clients must present a signed cert)")
@@ -170,6 +172,7 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 		IdleTimeoutMs:  *c.idleTimeoutMs,
 		RTUOverTCP:     *c.rtuOverTCP,
 		ReadCacheTTLMs: *c.readCacheTTL,
+		Transparent:    *c.transparent,
 	}
 	if *c.deviceUnitID != "" {
 		u, err := strconv.ParseUint(*c.deviceUnitID, 10, 8)

@@ -122,6 +122,20 @@ type Device struct {
 	// transparent semantics). NOTE: a cache makes responses stale by up
 	// to the TTL; only enable it for data that changes slowly.
 	ReadCacheTTLMs int `yaml:"read_cache_ttl_ms"`
+
+	// Transparent enables bump-in-the-wire mode (B3, Linux-only): instead
+	// of dialing DeviceAddr, the gateway recovers the ORIGINAL
+	// destination of each transparently intercepted connection from
+	// netfilter conntrack (SO_ORIGINAL_DST) and forwards there. A
+	// netfilter rule (scripts/setup-transparent.sh) steers inbound
+	// TCP/502 into the listener; clients keep dialing the device's real
+	// IP — zero reconfiguration at either end. Mutually exclusive with
+	// device_addr (which stays the metrics/log label only). FAIL-OPEN by
+	// design: if the redirect rule is missing (or the box bridges without
+	// redirecting), traffic flows unproxied straight to the device and
+	// all shielding is bypassed. Requires CAP_NET_ADMIN to install the
+	// rule.
+	Transparent bool `yaml:"transparent"`
 }
 
 // MBAPSConfig configures the mbaps role-authorization mode (B12). The
@@ -293,6 +307,13 @@ func (c *Config) Validate() error {
 		if d.ReadCacheTTLMs < 0 {
 			return fmt.Errorf("config: %s: read_cache_ttl_ms must be >= 0", label)
 		}
+		// B3: transparent mode replaces the device_addr dial target with
+		// the per-connection original destination from conntrack.
+		if d.Transparent {
+			if d.DeviceAddr == "" {
+				return fmt.Errorf("config: %s: device_addr is required in transparent mode (used as the name/label)", label)
+			}
+		}
 		for j, cidr := range d.Allow {
 			if !validIPorCIDR(cidr) {
 				return fmt.Errorf("config: %s: allow[%d]: invalid IP or CIDR %q", label, j, cidr)
@@ -400,6 +421,11 @@ func (d *Device) HasReadCache() bool { return d.ReadCacheTTLMs > 0 }
 func (d *Device) ReadCacheTTL() time.Duration {
 	return time.Duration(d.ReadCacheTTLMs) * time.Millisecond
 }
+
+// HasTransparent reports whether bump-in-the-wire mode (B3) is enabled:
+// the upstream target is the per-connection original destination
+// recovered from netfilter conntrack, not device_addr.
+func (d *Device) HasTransparent() bool { return d.Transparent }
 
 // Validate checks a TLS configuration block: cert and key are
 // both-or-neither, client_ca requires cert/key, and all configured files

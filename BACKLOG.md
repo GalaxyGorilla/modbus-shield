@@ -1,13 +1,28 @@
 # BACKLOG — modbus-shield
 
-Things to implement later, in rough priority order. Each item names the
-technology researched for it (verified healthy on GitHub, Oct 2026).
-
-| # | Item | Technology / notes |
-|---|---|---|
-| B3 | **Transparent bump-in-the-wire mode** — L2 splice, zero client/device reconfiguration, cable-splice install; intercept port 502 inline, pass other traffic | **florianl/go-nfqueue** first candidate (MIT, netfilter queue API, needs CAP_NET_ADMIN); cilium/ebpf = later performance path (linux amd64/arm64 only). Design spike needed; Linux-only |
+All items are done. The last one (B3) landed after a design spike
+(docs/b3-transparent-mode.md). Kept for reference.
 
 ## Done (kept for reference)
+
+- ~~B3 Transparent bump-in-the-wire mode~~ — **done**: `transparent: true`
+  (or `--transparent`, Linux-only). The gateway forwards to the client's
+  ORIGINAL destination recovered from netfilter conntrack
+  (`SO_ORIGINAL_DST`) per front-leg connection instead of a static
+  `device_addr` (which stays the label). A netfilter rule
+  (`scripts/setup-transparent.sh`, idempotent, never auto-run) steers
+  inbound TCP/502 into the listener. Zero client/device reconfiguration
+  — cable-splice install. Build-tagged `origdst_linux.go` (non-Linux
+  errors cleanly). **FAIL-OPEN by design**: a missing rule / bridging
+  without redirecting flows traffic unproxied to the device (shielding
+  bypassed) — documented loudly; a blocking inline firewall would
+  fail-closed by taking the device down with the box. Design spike +
+  options (NFQUEUE userspace mangling and eBPF rejected) in
+  docs/b3-transparent-mode.md. Verified by unit tests (sockaddr
+  parsing) + e2e with an injected fake resolver (transparent gateway,
+  per-connection target re-dial, resolver-error recovery); the
+  netfilter path needs manual validation on target hardware with
+  CAP_NET_ADMIN. See examples/transparent.md.
 
 - ~~B8 opt-in TTL read cache~~ — **done**: `read_cache_ttl_ms: N`
   (or `--read-cache-ttl-ms N`) serves repeated FC 1-4 reads from memory,
