@@ -1,0 +1,37 @@
+# modbus-shield example configuration — gateway (v1) shape.
+# One file = one proxy instance; each `devices:` entry couples exactly one
+# front-leg listener with one upstream legacy device.
+#
+#   [N clients] --Modbus TCP--> [modbus-shield] --Modbus TCP--> [legacy device]
+#
+# Run:  modbus-shield gateway --config /etc/modbus-shield/config.yaml
+# Or without a file (single device, flags only):
+#   modbus-shield gateway --listen :5020 --device 10.0.0.42:502
+
+devices:
+  # Retrofit box in front of a fragile legacy PLC: everyone may read,
+  # nobody may write, only the SCADA subnet may connect at all.
+  - name: legacy-plc
+    listen_addr: ":5020"        # clients connect here (repoint them once)
+    device_addr: "10.0.0.42:502" # the legacy device (plain Modbus TCP)
+    read_only: true              # write FCs get a Modbus exception (0x01)
+    allow:                       # client allow-list (IPs or CIDRs)
+      - "10.8.0.0/24"            # SCADA segment
+      - "192.168.1.7"            # one engineering station
+    max_clients: 8               # shield the device from conn storms
+    rate_per_sec: 50             # shield it from polling storms
+    timeout_ms: 5000             # per-request upstream deadline
+    # device_unit_id: 17         # optional remap (serial-gateway style):
+                                 # clients keep their unit IDs, the device
+                                 # always sees 17; responses are rewritten
+                                 # back to the client's original unit ID.
+
+  # Second device behind the same box, unrestricted reads/writes.
+  - listen_addr: ":5021"
+    device_addr: "10.0.0.43:502"
+
+log:
+  level: info        # debug | info | warn | error
+  format: console    # console | json
+
+# metrics_listen: ":9202"  # uncomment to serve Prometheus metrics

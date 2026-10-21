@@ -43,15 +43,16 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 1 — `internal/mbtcp` complete. Single MBAP
-parser (strict framing, validate-before-allocate), unit tests + fuzz target
-(3.9M execs clean), build/vet/staticcheck/race green.**
+**Current state: milestone 2 — `internal/config` complete. YAML config
+(multi-device, read-only, allow-list, shielding limits, unit remap) with
+full validation; first dependency added (`gopkg.in/yaml.v3` v3.0.1,
+govulncheck clean). All gates green.**
 
 | Milestone | Status |
 |---|---|
 | Scaffold: dirs, go.mod, .gitignore, Makefile, AGENTS.md, BACKLOG.md | done |
 | `internal/mbtcp`: MBAP header build/parse (single parser, fuzz-ready), ADU cap, unit-ID types | done |
-| `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | pending |
+| `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | YAML done (flags mode lands with the CLI milestone) |
 | Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | pending |
 | Multiplexing + fairness + backpressure (goroutine-leak regression test) | pending |
 | ACLs + read-only policy + shielding limits (conn cap, rate limit) | pending |
@@ -75,7 +76,7 @@ parser (strict framing, validate-before-allocate), unit tests + fuzz target
 ```
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP header build/parse (mbtcp.go, fuzz_test.go + unit tests)
-internal/config/           YAML config + flag overrides, multi-device, ACL/policy
+internal/config/           YAML config (config.go + tests); flags overrides land with CLI
 internal/proxy/            gateway wiring: listener, client loops, upstream pool
 internal/acl/              client IP allow/deny + function-code policy (read-only)
 internal/observ/           zap logging + Prometheus metrics
@@ -127,8 +128,8 @@ or set `-timeout` on `go test` (network tests would hang without one).
 
 ## 6. Key Dependencies (go.mod)
 
-- (milestone 0: none — stdlib only; planned: `prometheus/client_golang`,
-  `spf13/pflag`, `go.uber.org/zap`, `gopkg.in/yaml.v3`)
+- `gopkg.in/yaml.v3 v3.0.1` (milestone 2; govulncheck-clean)
+- planned: `prometheus/client_golang`, `spf13/pflag`, `go.uber.org/zap`
 - Modbus protocol handling is implemented in-house on `encoding/binary`
   (full parser control for fuzzability); a client lib (e.g. grid-x/modbus)
   is only considered for the `selftest` probe — to be decided at that
@@ -167,6 +168,14 @@ or set `-timeout` on `go test` (network tests would hang without one).
   unit-ID remapping can rewrite both independently. Build via `NewADU`/
   `AppendTo` (buffer-reusing). Proxy-generated exceptions use
   `ExceptionPDU(fc, code)` (FC|0x80 + code).
+- **`internal/config` YAML schema** (one file = one instance, N
+  `devices:` entries): `name` (opt; defaults to device_addr), `listen_addr`,
+  `device_addr`, `read_only`, `allow` (IPs/CIDRs), `max_clients` (def 16),
+  `rate_per_sec`, `timeout_ms` (def 5000), `device_unit_id` (opt remap),
+  plus top-level `log.{level,format}` and `metrics_listen`. Validate
+  enforces: ≥1 device, host:port syntax, unique listen addrs,
+  non-negative limits, valid IP/CIDR entries. Accessors:
+  `Device.RequestTimeout()`, `HasUnitRemap()`, `UpstreamUnitID()`.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,
