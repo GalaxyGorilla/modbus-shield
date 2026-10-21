@@ -83,17 +83,29 @@ serving.
 
 ## 3. Verify
 
-With a TLS-capable client (here Python `pymodbus`; `mbpoll` does not
-speak TLS):
+With a TLS-capable client. `mbpoll` does not speak TLS, so use Python
+(`pymodbus` v3 wraps an SSLContext) or any TLS-capable Modbus client you
+already have:
 
 ```python
+import ssl
 from pymodbus.client import ModbusTcpClient
 
-c = ModbusTcpClient("10.8.0.1", port=5020,
-                    sslctx=None)  # pymodbus: use_tls=True path or custom SSLContext
+ctx = ssl.create_default_context(cafile="/etc/modbus-shield/tls/ca.crt")
+ctx.load_cert_chain("/etc/modbus-shield/tls/client.crt",
+                    "/etc/modbus-shield/tls/client.key")
+# check_hostname=False because the CA below signs an IP-SAN cert;
+# prefer a DNS SAN + hostname check in production.
+ctx.check_hostname = False
+
+c = ModbusTcpClient("10.8.0.1", port=5020, sslctx=ctx)
+c.connect()
+rr = c.read_holding_registers(0x0100, count=1, slave=1)
+print(rr.registers)
+c.close()
 ```
 
-Or a bare-socket check with the client cert:
+Or a bare-socket check with the client cert (no Modbus client needed):
 
 ```bash
 openssl s_client -connect 10.8.0.1:5020 \

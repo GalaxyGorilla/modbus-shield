@@ -7,6 +7,9 @@ A **Modbus TCP retrofit security proxy** for legacy devices. One static
 binary, one box in front of the legacy device. The device keeps speaking
 plain Modbus TCP; the proxy does all the security and shielding work.
 
+**Never heard of Modbus?** Read the [two-minute primer](examples/gateway.md#2-two-minutes-of-modbus-background)
+below the fold — everything else in this document assumes only that.
+
 ```
 [SCADA] ──┐
 [Node-RED] ──► Modbus TCP ──►  ┌──────────────────────┐  ──Modbus TCP──►  ┌───────────────┐
@@ -76,6 +79,15 @@ validation and self-tests, a static binary and hardened systemd units.
 It is intentionally opinionated about deployment and operations.
 
 ## Deployment shape
+
+**Not sure which shape is yours?** The one-line picker:
+
+- "I just want the box in front of the device" → [Gateway box](examples/gateway.md)
+- "Clients and device are on different sites/segments" → [Two-proxy secured line](examples/two-proxy.md)
+- "The network between clients and box is untrusted" → [TLS front leg](examples/tls.md)
+- "Different people deserve different permissions" → [mbaps role authorization](examples/mbaps.md)
+- "I can't reconfigure anything — cable splice only" → [Transparent bump-in-the-wire](examples/transparent.md) (Linux-only)
+- "Plant SCADA should monitor the box itself" → [Health via Modbus](examples/health.md)
 
 | Shape | Topology | Use when |
 |---|---|---|
@@ -147,7 +159,7 @@ modbus-shield validate --config /etc/modbus-shield/gateway.yaml
 modbus-shield selftest --config /etc/modbus-shield/gateway.yaml
 
 # other commands:
-modbus-shield genpsk    # fresh random 32-byte hex key (tunnel milestone)
+modbus-shield genpsk    # fresh random 32-byte hex key (for the TLS/mTLS modes)
 modbus-shield version
 ```
 
@@ -200,7 +212,7 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
 |---|---|---|
 | `modbus_shield_connections_accepted_total` | — | front-leg connections admitted |
 | `modbus_shield_connections_rejected_total` | — | rejected by conn cap or allow-list |
-| `modbus_shield_requests_total` | `device`, `outcome` | requests by outcome: `forwarded`, `exception_device`, `exception_policy`, `exception_rate` |
+| `modbus_shield_requests_total` | `device`, `outcome` | requests by outcome: `forwarded`, `exception_device`, `exception_policy` (read-only/mbaps), `exception_rate`, `exception_authz` (mbaps role denied), `cache_hit` |
 | `modbus_shield_request_errors_total` | — | upstream exchange errors |
 | `modbus_shield_stale_responses_discarded_total` | — | stale/mismatched device responses discarded |
 | `modbus_shield_reconnects_total` | — | successful upstream dials (initial connect counts) |
@@ -243,11 +255,13 @@ anchor.
 
 ## Documentation
 
-- [`examples/`](examples/) — copy-paste deployment walkthroughs
-  (gateway, multi-device, production operations).
+- [`examples/`](examples/) — copy-paste deployment walkthroughs with a
+  scenario picker: [gateway.md](examples/gateway.md) (start here; includes
+  a two-minute Modbus primer), multi-device, TLS, two-proxy, mbaps roles,
+  health-via-Modbus, transparent, and the production operations guide.
 - [`configs/`](configs/) — YAML template.
 - [`deploy/`](deploy/) — systemd unit file.
-- [`BACKLOG.md`](BACKLOG.md) — things to implement later.
+- [`BACKLOG.md`](BACKLOG.md) — all items done; kept as the decision record.
 - [`AGENTS.md`](AGENTS.md) — architecture, wire-level details and the
   maintenance rules.
 

@@ -5,6 +5,11 @@ primary retrofit deployment. All clients multiplex onto exactly one
 device connection; the box enforces who may connect, who may write, and
 how hard the device is hammered.
 
+**This is your walkthrough if:** you have one legacy device with Modbus
+TCP (a PLC, inverter, power meter, EV charger, heat pump...), you cannot
+or don't want to modify it, and you want it protected. Start at section 0
+for the Modbus background, then paste two lines.
+
 ```
 [SCADA] --\
 [Node-RED] ---> Modbus TCP --> [modbus-shield box] --Modbus TCP--> [legacy device]
@@ -15,6 +20,36 @@ This is the deployment for the retrofit use case: the box **is** the
 device's security gate — blocked writes and rejected clients never reach
 the legacy device, and the device-side wire stays 100% plain Modbus TCP.
 The device notices nothing.
+
+## 0. Two minutes of Modbus background
+
+Everything else on this page assumes only this:
+
+- **What Modbus is.** A network language from 1979 that industrial
+  machines (PLCs, inverters, power meters, chargers) still speak today.
+  A client asks, the device answers: "give me the value of register 40001"
+  → "412". That's the whole protocol — reads and writes of numbered
+  registers.
+- **Why it matters here.** Modbus has **no passwords, no encryption, no
+  permissions** — it was designed for a serial cable between two trusted
+  machines, long before network security existed. Anyone who can reach
+  the device can read it *and command it*.
+- **"Register" and "unit ID".** A *register* is one numbered value in the
+  device (a temperature, a setpoint, a fault code). The *unit ID* is a
+  1-byte address — it matters when several devices share one line (see
+  the unit-ID remap hardening option below).
+- **Why old devices are fragile.** Many accept only **one network
+  connection**; a second computer asking questions can freeze or crash
+  them. And they never get updates — the firmware is what it is.
+- **What the box changes.** Nothing about the device. It speaks Modbus
+  toward the device exactly as clients did before, and speaks Modbus
+  toward clients exactly as the device expected. Only now there is
+  something in between that counts connections, rejects strangers and
+  blocks writes.
+
+You do not need more Modbus knowledge to deploy the box. Where a
+walkthrough needs device-specific values (register numbers, unit IDs),
+they come from your device's manual, not from this project.
 
 ## 1. Run it (paste two lines)
 
@@ -77,8 +112,10 @@ address changes:
 mbpoll -1 -m tcp -p 5020 -a 1 -c 1 -t 4:hex <box-ip>
 ```
 
-The device keeps its unit IDs; register maps and data encodings flow
-through untouched (the proxy parses only the 7-byte MBAP header).
+A successful read prints the register value (e.g. `[257]: 0xCAFE`); a
+blocked write prints the rejection exception instead. The device keeps
+its unit IDs; register maps and data encodings flow through untouched
+(the proxy parses only the 7-byte MBAP header).
 
 ## Protection semantics
 
@@ -96,11 +133,23 @@ through untouched (the proxy parses only the 7-byte MBAP header).
 
 ## Hardening options
 
-- **Unit-ID remap** — for serial-gateway-style devices where clients
-  must keep their unit IDs but the device only answers one:
+- **Unit-ID remap** — for devices behind a serial converter where the
+  device only answers one fixed unit ID but your clients use another:
   `--device-unit-id 17` (or `device_unit_id: 17` in YAML). Requests are
   rewritten toward the device, responses rewritten back to the client's
   original unit ID.
+- **Slower pacing for picky devices** — `request_delay_ms: 10` enforces
+  a minimum gap between requests toward the device (some old devices
+  degrade when asked too fast). `idle_timeout_ms: 60000` disconnects
+  clients that went silent, freeing their slots.
+- **Caching for very slow devices** — `read_cache_ttl_ms: 5000` makes
+  the box answer repeated identical reads from memory for 5 s
+  (off by default; writes always go through).
+- **Speaking to serial-only converters** — `rtu_over_tcp: true` when the
+  device sits behind a cheap converter that doesn't wrap Modbus TCP; the
+  box translates both directions.
+- **TLS / mTLS, roles, health, transparent splice** — see the
+  [examples index](README.md); each has its own walkthrough.
 - **Prometheus metrics** — `--metrics-addr :9202` (or
   `metrics_listen:` in YAML) serves connection/request/error counters,
   device-up gauges and forwarding-latency histograms. Operations-side

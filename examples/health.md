@@ -39,7 +39,7 @@ against the health unit-ID. Both return the same register image:
 | Register | Meaning |
 |---|---|
 | 0 | magic `0x4D53` ("MS") — identifies the endpoint |
-| 1 | register map version (bumped when the layout changes) |
+| 1 | register map version (currently 2; bumped when the layout changes) |
 | 2–3 | uptime seconds (uint32, high word first) |
 | 4 | upstream state (1 = device connection up, 0 = down) |
 | 5 | upstream reconnects (16-bit wrap) |
@@ -52,6 +52,7 @@ against the health unit-ID. Both return the same register image:
 | 15 | read-only policy (1 = on) |
 | 16 | max_clients |
 | 17 | rate_per_sec (0 = unlimited) |
+| 18 | read-cache hits (16-bit wrap; only with `read_cache_ttl_ms` enabled) |
 
 Example with mbpoll (register numbers are 1-based on the CLI, so
 register 0 = `-r 1`):
@@ -82,7 +83,7 @@ and never reach the legacy device — even when the device is down
   exception. The registers are read-only by design — there is no write
   path into the box.
 - Out-of-range reads get exception 0x02 (Illegal Data Address); the
-  register count is fixed at 18.
+  register count is fixed at 19.
 
 ## Notes
 

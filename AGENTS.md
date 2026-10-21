@@ -43,17 +43,24 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: BACKLOG COMPLETE.** All v1 milestones + B1–B12 + B15
-done. B3 (transparent bump-in-the-wire, Linux-only) landed last after a
-design spike (docs/b3-transparent-mode.md): `transparent: true` (or
-`--transparent`) forwards to the client's ORIGINAL destination from
-netfilter conntrack (`SO_ORIGINAL_DST`) per front-leg connection —
-cable-splice install with zero client/device reconfiguration;
-`scripts/setup-transparent.sh` installs the idempotent REDIRECT rule
-(never auto-run). **Fail-open by design**: a missing rule / bridging
-without redirecting flows traffic unproxied to the device (shielding
-bypassed) — documented loudly. Full suite green under `-race`;
-staticcheck + govulncheck clean.**
+**Current state: BACKLOG COMPLETE + docs consistency pass.** All v1
+milestones + B1–B12 + B15 done. B3 (transparent bump-in-the-wire,
+Linux-only) landed after a design spike (docs/b3-transparent-mode.md):
+`transparent: true` (or `--transparent`) forwards to the client's
+ORIGINAL destination from netfilter conntrack (`SO_ORIGINAL_DST`) per
+front-leg connection — cable-splice install with zero client/device
+reconfiguration; `scripts/setup-transparent.sh` installs the idempotent
+REDIRECT rule (never auto-run). **Fail-open by design**: a missing rule
+/ bridging without redirecting flows traffic unproxied to the device
+(shielding bypassed) — documented loudly. Docs audit (post-backlog):
+README got a scenario picker + metric-table fixes (exception_authz,
+cache_hit outcomes), gateway.md got a two-minute Modbus primer (section
+0, no-modbus-knowledge requirement) + expanded hardening options,
+examples/README.md got a use-when index (stale "Planned" line removed),
+health.md register count corrected to 19 (B8), pymodbus snippets made
+functional, configs/gateway.yaml transparent block moved to top level +
+Run: path fixed. Full suite green under `-race`; staticcheck +
+govulncheck clean.**
 
 | Milestone | Status |
 |---|---|

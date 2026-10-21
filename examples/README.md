@@ -2,15 +2,17 @@
 
 Copy-paste deployment walkthroughs for every modbus-shield shape.
 
-| Walkthrough | Shape |
-|---|---|
-| [gateway.md](gateway.md) | Gateway box — one box in front of the legacy device (the v1 retrofit deployment) |
-| [multi-device.md](multi-device.md) | Multi-device box — one instance, several listeners and devices with per-device policies |
-| [operations.md](operations.md) | Production operations — systemd install, commissioning, monitoring, config changes, troubleshooting, upgrades |
-| [health.md](health.md) | Health via Modbus — monitor the box itself from plant SCADA via a virtual unit-ID (no extra port or tooling) |
-| [tls.md](tls.md) | TLS front leg — encrypted, optionally mTLS-authenticated client-facing side |
-| [two-proxy.md](two-proxy.md) | Two-proxy secured line — two boxes, TLS/mTLS across the untrusted link between them |
-| [mbaps.md](mbaps.md) | mbaps role authorization — per-role function-code rights from certificate roles (mTLS mandatory) |
-| [transparent.md](transparent.md) | Transparent bump-in-the-wire (Linux-only) — cable-splice install, zero reconfiguration, netfilter REDIRECT + conntrack |
+**New here?** Start with [gateway.md](gateway.md) — the primary retrofit
+deployment. It includes a two-minute Modbus background section, so no
+prior Modbus knowledge is needed.
 
-Planned (see [../BACKLOG.md](../BACKLOG.md)): transparent bump-in-the-wire.
+| Walkthrough | Use this when |
+|---|---|
+| [gateway.md](gateway.md) | You have one legacy device and want it protected — the standard retrofit deployment |
+| [multi-device.md](multi-device.md) | One box, several devices, different rules per device |
+| [operations.md](operations.md) | The box is deployed — day-2: install as a service, commission, monitor, troubleshoot, upgrade |
+| [health.md](health.md) | You want to monitor the box itself from plant SCADA with the Modbus tooling you already have |
+| [tls.md](tls.md) | Clients sit on an untrusted network segment and the traffic to the box must be encrypted (optionally mTLS) |
+| [two-proxy.md](two-proxy.md) | Clients and device are in different sites/segments — the link between two boxes carries only TLS |
+| [mbaps.md](mbaps.md) | Different users deserve different permissions — per-role function-code rights from certificate roles (mTLS mandatory) |
+| [transparent.md](transparent.md) | You cannot reconfigure clients or device at all — cable-splice install, zero reconfiguration (Linux-only) |

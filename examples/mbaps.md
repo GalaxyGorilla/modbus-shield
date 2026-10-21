@@ -92,15 +92,24 @@ modbus-shield validate --config gateway.yaml
 modbus-shield selftest --config gateway.yaml   # probes the device directly
 ```
 
-Then point an mbaps-capable client at the box. With pymodbus (TLS client
-with the operator certificate):
+Then point an mbaps-capable client at the box. `mbpoll` does not speak
+TLS; with pymodbus (v3), hand it an SSLContext carrying the role
+certificate:
 
 ```python
+import ssl
 from pymodbus.client import ModbusTcpClient
-c = ModbusTcpClient("modbus-shield-host", port=502,
-                    source_address=("modbus-shield-host", 0))
-c.settings_setup = lambda c: None  # see pymodbus TLS docs
-# pymodbus TLS: sslctx with certfile=operator.crt, keyfile=operator.key, CA bundle
+
+ctx = ssl.create_default_context(cafile="pki/ca.crt")
+ctx.load_cert_chain("pki/operator.crt", "pki/operator.key")
+ctx.check_hostname = False  # IP-SAN test cert; use DNS SAN in production
+
+c = ModbusTcpClient("modbus-shield-host", port=502, sslctx=ctx)
+c.connect()
+rr = c.read_holding_registers(0x0100, count=1, slave=1)   # allowed
+wr = c.write_register(0x0100, 1, slave=1)                 # denied: exception 0x01
+print(rr, wr)
+c.close()
 ```
 
 Any TLS-capable Modbus client works; the client presents its role

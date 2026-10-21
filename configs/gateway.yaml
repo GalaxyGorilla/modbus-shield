@@ -4,7 +4,7 @@
 #
 #   [N clients] --Modbus TCP--> [modbus-shield] --Modbus TCP--> [legacy device]
 #
-# Run:  modbus-shield gateway --config /etc/modbus-shield/config.yaml
+# Run:  modbus-shield gateway --config /etc/modbus-shield/gateway.yaml
 # Or without a file (single device, flags only):
 #   modbus-shield gateway --listen :5020 --device 10.0.0.42:502
 
@@ -68,9 +68,11 @@ log:
   format: console    # console | json
 
 # metrics_listen: ":9202"  # uncomment to serve Prometheus metrics
-    # Transparent bump-in-the-wire mode (B3, Linux-only): forward to the
-    # client's ORIGINAL destination from conntrack (netfilter REDIRECT +
-    # SO_ORIGINAL_DST) instead of dialing device_addr. Zero client/device
-    # reconfiguration; see scripts/setup-transparent.sh + examples/transparent.md.
-    # FAIL-OPEN: a missing redirect rule flows traffic unproxied to the device.
-    # transparent: true
+# transparent: true         # transparent bump-in-the-wire mode (B3, Linux-only):
+                            # forward to the client's ORIGINAL destination from
+                            # conntrack (netfilter REDIRECT + SO_ORIGINAL_DST)
+                            # instead of dialing device_addr — zero client/device
+                            # reconfiguration. Requires scripts/setup-transparent.sh
+                            # + CAP_NET_ADMIN. FAIL-OPEN: a missing redirect rule
+                            # flows traffic unproxied to the device.
+                            # See examples/transparent.md.
