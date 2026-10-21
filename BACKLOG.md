@@ -16,7 +16,13 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
 | B9 | **Connection-ID in logs** — correlate client-side and device-side log lines | observ package |
 | B10 | **Multiple listeners per device** — one upstream, several front listeners | config schema extension |
 | B11 | **systemd watchdog** — `WatchdogSec`/`sd_notify` so a wedged process is restarted by the host | coreos/go-systemd/v22 `daemon` package |
-| B15 | **Interop test client** — drive the proxy with a real CLI Modbus master | **epsilonrt/mbpoll** (GPL-3, apt/brew installable; pymodbus fallback) |
+
+## Done (kept for reference)
+
+- ~~B15 Interop test client~~ — **done**: `scripts/interop-modbus.sh` +
+  `make interop` drive the gateway with real mbpoll (reads, writes,
+  exception pass-through, unit-ID addressing, concurrent clients); exit 77
+  when mbpoll is missing.
 
 ## Out of scope (do not re-litigate)
 
