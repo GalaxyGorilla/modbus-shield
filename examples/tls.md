@@ -15,8 +15,16 @@ signed by your CA may connect at all.
 
 ## 1. Create certificates
 
-For production, use your PKI. For a quick start, one self-signed CA with
-a server and a client certificate (ECDSA, IP SAN for the box):
+For production, use your PKI. For a quick start, `scripts/gen-certs.sh`
+generates a throwaway CA + server + client cert (and mbaps role certs)
+into `certs/`:
+
+```bash
+scripts/gen-certs.sh
+```
+
+Or by hand — one self-signed CA with a server and a client certificate
+(ECDSA, IP SAN for the box):
 
 ```bash
 mkdir -p /etc/modbus-shield/tls && cd /etc/modbus-shield/tls

@@ -43,7 +43,8 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: BACKLOG COMPLETE + docs consistency pass.** All v1
+**Current state: BACKLOG COMPLETE + docs consistency pass + streamlining
+pass.** All v1
 milestones + B1–B12 + B15 done. B3 (transparent bump-in-the-wire,
 Linux-only) landed after a design spike (docs/b3-transparent-mode.md):
 `transparent: true` (or `--transparent`) forwards to the client's
@@ -109,7 +110,7 @@ internal/acl/              client IP allow-list + write-FC classifier (acl.go + 
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
 internal/watchdog/         sd_notify wrapper (READY + watchdog pings; no-ops outside systemd)
 configs/                   example YAML templates
-scripts/                   interop-modbus.sh (real mbpoll), fakedevice.py, smoke scripts, SBOM entry point
+scripts/                   interop-modbus.sh (real mbpoll), gen-certs.sh (throwaway PKI incl. mbaps role certs), fakedevice.py, smoke scripts, SBOM entry point
 deploy/                    hardened systemd unit files
 examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md, two-proxy.md, mbaps.md, health.md, transparent.md
 ```

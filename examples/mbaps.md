@@ -31,6 +31,11 @@ How it works:
 
 ## 1. Create the PKI (one CA, server + per-role client certs)
 
+For a quick start, `scripts/gen-certs.sh` generates the whole PKI
+(CA + server + client + operator/engineer role certs with the mbaps
+role extension) into `certs/`. The walkthrough below uses a `pki/`
+directory with production-shaped names.
+
 ```sh
 mkdir pki && cd pki
 # CA
