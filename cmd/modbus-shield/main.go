@@ -1,5 +1,5 @@
 // Command modbus-shield runs one gateway instance of the Modbus TCP
-// retrofit security proxy. The instance is configured either by a YAML
+// security proxy. The instance is configured either by a YAML
 // file (--config) or entirely by flags for plug-and-play deployments
 // without config files.
 package main
@@ -80,35 +80,35 @@ func genPSK() int {
 type cliFlags struct {
 	fs *pflag.FlagSet
 
-	configPath   *string
-	listen       *string
-	extraListen  *[]string
-	device       *string
-	readOnly     *bool
-	allow        *[]string
-	maxClients   *int
-	ratePerSec   *int
-	timeoutMs    *int
+	configPath     *string
+	listen         *string
+	extraListen    *[]string
+	device         *string
+	readOnly       *bool
+	allow          *[]string
+	maxClients     *int
+	ratePerSec     *int
+	timeoutMs      *int
 	requestDelayMs *int
 	idleTimeoutMs  *int
 	rtuOverTCP     *bool
 	readCacheTTL   *int
 	transparent    *bool
-	deviceUnitID *string
-	healthUnitID *string
-	tlsCert      *string
-	tlsKey       *string
-	tlsClientCA  *string
-	mbapsRoles   *[]string
-	devTLSCA     *string
-	devTLSSNI    *string
-	devTLSCert   *string
-	devTLSKey    *string
-	metricsAddr  *string
-	logLevel     *string
-	logFormat    *string
-	jsonOut      *bool
-	selftestProbe *bool
+	deviceUnitID   *string
+	healthUnitID   *string
+	tlsCert        *string
+	tlsKey         *string
+	tlsClientCA    *string
+	mbapsRoles     *[]string
+	devTLSCA       *string
+	devTLSSNI      *string
+	devTLSCert     *string
+	devTLSKey      *string
+	metricsAddr    *string
+	logLevel       *string
+	logFormat      *string
+	jsonOut        *bool
+	selftestProbe  *bool
 }
 
 // register defines the full flag set shared by gateway, validate and
@@ -136,9 +136,9 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.tlsKey = fs.String("tls-key", "", "front-leg TLS server key (PEM)")
 	c.tlsClientCA = fs.String("tls-client-ca", "", "client certificate CA (PEM; enables mTLS: clients must present a signed cert)")
 	c.mbapsRoles = fs.StringArray("mbaps-role", nil, "mbaps role authorization: ROLE=FC,FC,... (repeatable; requires --tls-client-ca; clients need the Modbus role cert extension)")
-	c.devTLSCA = fs.String("device-tls-ca", "", "upstream TLS CA (PEM; verifies the far box's certificate; empty = system roots)")
-	c.devTLSSNI = fs.String("device-tls-server-name", "", "upstream TLS server-name override (when the far box presents a different name)")
-	c.devTLSCert = fs.String("device-tls-cert", "", "upstream TLS client certificate (PEM; mTLS toward the far box)")
+	c.devTLSCA = fs.String("device-tls-ca", "", "upstream TLS CA (PEM; verifies the remote proxy's certificate; empty = system roots)")
+	c.devTLSSNI = fs.String("device-tls-server-name", "", "upstream TLS server-name override (when the remote proxy presents a different name)")
+	c.devTLSCert = fs.String("device-tls-cert", "", "upstream TLS client certificate (PEM; mTLS toward the remote proxy)")
 	c.devTLSKey = fs.String("device-tls-key", "", "upstream TLS client key (PEM)")
 	c.metricsAddr = fs.String("metrics-addr", "", "Prometheus metrics listen address (e.g. 127.0.0.1:9202)")
 	c.logLevel = fs.String("log-level", "info", "log level: debug, info, warn, error")
@@ -162,11 +162,11 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 
 		ExtraListen: *c.extraListen,
 		DeviceAddr:  *c.device,
-		ReadOnly:   *c.readOnly,
-		Allow:      *c.allow,
-		MaxClients: *c.maxClients,
-		RatePerSec: *c.ratePerSec,
-		TimeoutMs:  *c.timeoutMs,
+		ReadOnly:    *c.readOnly,
+		Allow:       *c.allow,
+		MaxClients:  *c.maxClients,
+		RatePerSec:  *c.ratePerSec,
+		TimeoutMs:   *c.timeoutMs,
 
 		RequestDelayMs: *c.requestDelayMs,
 		IdleTimeoutMs:  *c.idleTimeoutMs,
@@ -333,8 +333,8 @@ func runValidate(args []string) int {
 
 // runSelftest validates the configuration and then probes each
 // configured device with a real Modbus read (FC3) directly from this
-// box — proving the legacy device is reachable and speaks Modbus.
-// Designed for appliance commissioning and health checks. Exit 0 = all
+// host — proving the legacy device is reachable and speaks Modbus.
+// Designed for commissioning and health checks. Exit 0 = all
 // checks passed.
 func runSelftest(args []string) int {
 	fs := pflag.NewFlagSet("selftest", pflag.ContinueOnError)
@@ -401,7 +401,7 @@ func finishSelftest(rep report, jsonOut bool) int {
 
 // probeDevice sends one Modbus FC3 read (holding register 0, quantity 1)
 // directly to the device and waits for a response — proves the legacy
-// device is reachable from this box and speaks Modbus TCP. An exception
+// device is reachable from this host and speaks Modbus TCP. An exception
 // response still proves liveness (the device answered on the wire), so
 // it passes with a note. Two attempts (some devices drop the first query
 // after ARP resolution).
@@ -546,7 +546,7 @@ func runGateway(args []string) int {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintf(w, `modbus-shield — Modbus TCP retrofit security proxy
+	fmt.Fprintf(w, `modbus-shield — Modbus TCP security proxy
 
 Usage (config file):
   modbus-shield gateway --config <file> [--metrics-addr <addr>]
@@ -564,16 +564,15 @@ Usage (flags, no config file — plug and play):
        [--device-tls-cert <pem> --device-tls-key <pem>]] \
       [--metrics-addr <addr>] [--log-level <lvl>] [--log-format <fmt>]
 
-The gateway is a single box in front of the legacy device: N clients are
-multiplexed over ONE connection to the device (many legacy devices accept
-only one), writes can be blocked (--read-only), clients restricted
-(--allow) and the device shielded from polling storms (--rate-per-sec).
-Extra front doors (--extra-listen) share the same single upstream
-connection, connection cap, allow-list and TLS config with --listen —
-shielding stays per-device no matter how many addresses clients use.
-Pacing (--request-delay-ms) keeps a minimum gap between requests toward
-picky legacy devices; --idle-timeout-ms reaps front connections idle
-longer than the TTL (frees connection-cap slots from dead pollers).
+The gateway proxies N clients over ONE connection to the device (many
+legacy devices accept only one), writes can be blocked (--read-only),
+clients restricted (--allow) and the device shielded from polling storms
+(--rate-per-sec). Extra front doors (--extra-listen) share the same single
+upstream connection, connection cap, allow-list and TLS config with
+--listen — shielding stays per-device no matter how many addresses clients
+use. Pacing (--request-delay-ms) keeps a minimum gap between requests
+toward picky legacy devices; --idle-timeout-ms reaps front connections
+idle longer than the TTL (frees connection-cap slots from dead pollers).
 With --tls-cert/--tls-key the front leg terminates TLS (add
 --tls-client-ca for mTLS); the device-side wire stays plain Modbus TCP.
 With --mbaps-role the mbaps role authorization mode is enabled (requires
@@ -581,13 +580,13 @@ mTLS): clients must carry a role in the Modbus role certificate extension
 (OID 1.3.6.1.4.1.50316.802.1) and each request is checked against the
 role's allowed function codes; clients without a configured role are
 denied every device request.
-With --device-tls-* the upstream leg is secured instead: the box dials
+With --device-tls-* the upstream leg is secured instead: the proxy dials
 the device over TLS — the far side is a second modbus-shield gateway
 whose front leg terminates TLS in front of the local device (two-proxy
 secured line). Plain Modbus TCP on both end wires — the device notices
 nothing. With --health-unit-id the proxy answers requests to that virtual
 unit-ID itself with readable health registers (uptime, upstream state,
-counters) — plant SCADA monitors the box with the Modbus tooling it
+counters) — plant SCADA monitors the proxy with the Modbus tooling it
 already has.
 
 Other commands:
@@ -596,7 +595,7 @@ Other commands:
   modbus-shield selftest [--config <file> | same flags as gateway]
       [--probe=false] [--json]
       validate + probe each configured device with a real Modbus read
-      (FC3) directly from this box
+      (FC3) directly from this host
   modbus-shield genpsk   print a fresh random pre-shared key (hex; reserved for the future secured line)
   modbus-shield version
 `)

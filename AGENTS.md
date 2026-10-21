@@ -5,8 +5,8 @@
 
 ## 1. Mission
 
-This project is a **Modbus TCP retrofit security proxy**. From the original
-author:
+This project is a **Modbus TCP security proxy**. From the original
+author, describing the deployment that motivated it:
 
 > "What I want to do is basically 'retrofitting', e.g. adding security
 > capabilities to legacy devices by adding a box in front of them, or even
@@ -15,13 +15,16 @@ author:
 Deployment model (v1, gateway reverse proxy):
 
 ```
-[N clients] --Modbus TCP--> [modbus-shield box] --Modbus TCP--> [legacy device]
+[N clients] --Modbus TCP--> [modbus-shield] --Modbus TCP--> [legacy device]
 ```
 
 The device sees **one** connection forever; N clients are fed through in a
-fair queue. The box is the device's security gate: ACLs, write protection,
-connection/rate limits, and (later) TLS terminate at the proxy — the
+fair queue. The proxy is the device's security gate: ACLs, write
+protection, connection/rate limits, and TLS terminate at the proxy — the
 device-side wire stays 100% plain Modbus TCP. The device notices nothing.
+Commonly deployed as a small dedicated box in a retrofit install (the
+motivation above), but the software itself is just a proxy service and
+runs on any Linux host.
 
 The v1 essence: a **dumb-but-strict forwarder** — same data in/out, only
 filtered and queued. Deliberately NOT (yet): protocol translation, caching,
@@ -33,7 +36,7 @@ serial ports.
 |---|---|
 | Language | **Go** (chosen deliberately: static single binary for appliance use, goroutines/channels map 1:1 onto the multiplexer, race detector + native fuzzing for the "well tested" bar; snmp-shield sibling synergy) |
 | Protocol scope | **Modbus TCP only** (v1) — no RTU framing, no local serial ports; unit-ID remap covers serial converters that expose Modbus TCP |
-| Primary shape | **Gateway reverse proxy** (clients repointed to the box IP); transparent bump-in-the-wire is backlog B3; two-proxy secured line is B2 |
+| Primary shape | **Gateway reverse proxy** (clients repointed to the proxy); transparent bump-in-the-wire is backlog B3; two-proxy secured line is B2 |
 | Security v1 | **IP ACLs + function-code policy (read-only) + shielding limits** (conn cap + rate limit); TLS front leg is B1; per-role FC rights over mTLS (mbaps mode) is B12 |
 | Caching | **None** — exactly transparent semantics (opt-in TTL cache is B8) |
 | Transport level | Parse the 7-byte MBAP header, forward the PDU as an **opaque blob** — vendor register-map/encoding chaos flows through untouched |
@@ -44,7 +47,12 @@ serial ports.
 ## 3. Status / Roadmap
 
 **Current state: BACKLOG COMPLETE + docs consistency pass + streamlining
-pass.** All v1
+pass + identity rewording.** The software is presented as what it is —
+a **Modbus TCP security proxy**; the "box in front of the device" is a
+deployment story (from the original motivation), not the identity.
+README hero/Why/shape table, CLI usage + help text, and AGENTS.md
+mission now say "proxy"/"host"; examples keep deployment-level box
+phrasing where it describes a real dedicated-box install. All v1
 milestones + B1–B12 + B15 done. B3 (transparent bump-in-the-wire,
 Linux-only) landed after a design spike (docs/b3-transparent-mode.md):
 `transparent: true` (or `--transparent`) forwards to the client's

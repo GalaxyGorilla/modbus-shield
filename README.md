@@ -3,9 +3,9 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/GalaxyGorilla/modbus-shield.svg)](https://pkg.go.dev/github.com/GalaxyGorilla/modbus-shield)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-A **Modbus TCP retrofit security proxy** for legacy devices. One static
-binary, one box in front of the legacy device. The device keeps speaking
-plain Modbus TCP; the proxy does all the security and shielding work.
+A **Modbus TCP security proxy** for legacy devices. One static binary.
+The device keeps speaking plain Modbus TCP; the proxy does all the
+security and shielding work.
 
 **Never heard of Modbus?** Read the [two-minute primer](examples/gateway.md#2-two-minutes-of-modbus-background)
 below the fold — everything else in this document assumes only that.
@@ -27,12 +27,14 @@ concurrent TCP connections — a second poller crashes or degrades them.
 Replacing them is expensive or impossible; touching their firmware is
 off the table.
 
-modbus-shield is the box you put in front of them (retrofitting):
+modbus-shield sits in front of them — commonly as a small dedicated box
+in a retrofit install, but the software itself is just a proxy service
+that runs anywhere:
 
 - **Zero-touch on the device** — it keeps speaking plain Modbus TCP;
   the proxy does all the security work. No firmware changes, no
   register-map changes.
-- **One box is enough** — clients are repointed to the box IP once;
+- **One hop is enough** — clients are repointed to the proxy once;
   that repointing is the whole migration.
 - **The device sees one connection forever** — all clients multiplex
   onto a single upstream connection, fed through in a fair queue.
@@ -82,21 +84,21 @@ It is intentionally opinionated about deployment and operations.
 
 **Not sure which shape is yours?** The one-line picker:
 
-- "I just want the box in front of the device" → [Gateway box](examples/gateway.md)
+- "I just want a proxy in front of the device" → [Gateway](examples/gateway.md)
 - "Clients and device are on different sites/segments" → [Two-proxy secured line](examples/two-proxy.md)
-- "The network between clients and box is untrusted" → [TLS front leg](examples/tls.md)
+- "The network between clients and the proxy is untrusted" → [TLS front leg](examples/tls.md)
 - "Different people deserve different permissions" → [mbaps role authorization](examples/mbaps.md)
 - "I can't reconfigure anything — cable splice only" → [Transparent bump-in-the-wire](examples/transparent.md) (Linux-only)
-- "Plant SCADA should monitor the box itself" → [Health via Modbus](examples/health.md)
+- "Plant SCADA should monitor the proxy itself" → [Health via Modbus](examples/health.md)
 
 | Shape | Topology | Use when |
 |---|---|---|
-| [Gateway box](examples/gateway.md) (v1) | `[N clients] ⇄ modbus-shield ⇄ [legacy device]` | One box in front of the device; the retrofit use case |
+| [Gateway](examples/gateway.md) (v1) | `[N clients] ⇄ modbus-shield ⇄ [legacy device]` | A proxy in front of the device; the classic deployment (often as a small dedicated box) |
 | [TLS front leg](examples/tls.md) (B1) | `[TLS clients] ⇄ TLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Clients on an untrusted segment; encrypted, optionally cert-authenticated (mTLS) front door |
-| [Two-proxy secured line](examples/two-proxy.md) (B2) | `[N clients] ⇄ plain ⇄ box ⇄ TLS/mTLS ⇄ box ⇄ plain ⇄ [device]` | Clients and device in different segments/sites; the untrusted link between the boxes carries only TLS |
-| [Health via Modbus](examples/health.md) (B4) | `[SCADA] ⇄ modbus-shield ⇄ [device]` (health on a virtual unit-ID) | Plant SCADA monitors the box itself with the Modbus tooling it already has — no extra port or tooling |
+| [Two-proxy secured line](examples/two-proxy.md) (B2) | `[N clients] ⇄ plain ⇄ proxy ⇄ TLS/mTLS ⇄ proxy ⇄ plain ⇄ [device]` | Clients and device in different segments/sites; the untrusted link between the two proxies carries only TLS |
+| [Health via Modbus](examples/health.md) (B4) | `[SCADA] ⇄ modbus-shield ⇄ [device]` (health on a virtual unit-ID) | Plant SCADA monitors the proxy itself with the Modbus tooling it already has — no extra port or tooling |
 | [mbaps role authorization](examples/mbaps.md) (B12) | `[role clients] ⇄ mTLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Per-client function-code rights from certificate roles (MODBUS/TCP Security profile's role-based AuthZ on the front leg) |
-| [Transparent bump-in-the-wire](examples/transparent.md) (B3, Linux-only) | `[clients] --splice-- box --splice-- [device]` (clients keep dialing the device IP) | Cable-splice install: zero client/device reconfiguration; netfilter REDIRECT + conntrack original-dst; **fail-open** if the rule is missing |
+| [Transparent bump-in-the-wire](examples/transparent.md) (B3, Linux-only) | `[clients] --splice-- proxy --splice-- [device]` (clients keep dialing the device IP) | Cable-splice install: zero client/device reconfiguration; netfilter REDIRECT + conntrack original-dst; **fail-open** if the rule is missing |
 
 Planned (see [BACKLOG.md](BACKLOG.md)): none — all backlog items are done.
 Security note: the Modbus Organization publishes a TLS security
@@ -122,7 +124,7 @@ make            # or: go build -o bin/modbus-shield ./cmd/modbus-shield
 ### Plug and play (no config file)
 
 ```bash
-# the retrofit box: everyone may read, nobody may write,
+# read-only gateway: everyone may read, nobody may write,
 # only the SCADA subnet may connect at all
 modbus-shield gateway \
   --listen :5020 \
@@ -133,7 +135,7 @@ modbus-shield gateway \
   --rate-per-sec 50
 ```
 
-Point the clients at the box IP instead of the device IP. Full
+Point the clients at the proxy address instead of the device IP. Full
 walkthrough: [examples/gateway.md](examples/gateway.md).
 
 ### Config files
@@ -233,8 +235,9 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
   `ProtectSystem=strict`, `CAP_NET_BIND_SERVICE` for privileged ports).
 - **systemd watchdog** — the binary speaks sd_notify: `READY=1` on
   startup and `WATCHDOG=1` pings while running (internal/watchdog), so a
-  wedged process is restarted by the host. The box IS the device's
-  network path — it must never hang silently. No-ops outside systemd.
+  wedged process is restarted by the host. When deployed on an in-path
+  box, it IS the device's network path — it must never hang silently.
+  No-ops outside systemd.
 - **Supply chain** — `make sbom` produces SPDX + CycloneDX SBOMs of the
   release binary into `dist/`; `make vulnscan` matches them against
   NVD/GHSA/OSV and fails on HIGH-severity findings. Both exit 77 (skip)
