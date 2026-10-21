@@ -35,10 +35,10 @@ func TestParseADUSpecExample(t *testing.T) {
 
 func TestParseADURoundTrip(t *testing.T) {
 	pdus := [][]byte{
-		{0x01},                                  // bare function code (minimum)
-		{0x03, 0x00, 0x01, 0x00, 0x01},          // read holding registers
-		bytes.Repeat([]byte{0xAB}, MaxPDU),      // maximum-size PDU
-		{0x86, 0x02},                            // exception response
+		{0x01},                             // bare function code (minimum)
+		{0x03, 0x00, 0x01, 0x00, 0x01},     // read holding registers
+		bytes.Repeat([]byte{0xAB}, MaxPDU), // maximum-size PDU
+		{0x86, 0x02},                       // exception response
 	}
 	units := []uint8{0, 1, 17, 247, 255}
 	txn := uint16(0)

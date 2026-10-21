@@ -17,7 +17,7 @@ type rateLimiter struct {
 	mu     sync.Mutex
 	tokens float64
 	max    float64
-	refill float64          // tokens per second
+	refill float64 // tokens per second
 	last   time.Time
 	nowFn  func() time.Time // stubbed in tests
 }

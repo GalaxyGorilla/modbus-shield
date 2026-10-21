@@ -43,16 +43,15 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 4+ — shielding complete. `internal/proxy`:
-front-leg listener, per-client lock-step loop, upstream connection with
-reconnect/backoff, stale-response discard, unit-ID remap, IP allow-list
-gate, read-only policy, race-free connection cap, token-bucket rate
-limiter (`rate_per_sec`, rejected requests get exception 0x06 and never
-reach the device). Concurrency e2e under `-race` (15 tests): 8 clients ×
-25 reads multiplex onto exactly ONE upstream connection (LockStep
-device), fairness under 100ms/request device, idle/stalled client
-isolation, cap enforcement (2/2 split), device-outage re-dial recovery,
-goroutine-leak regression, rate-limit burst/refill/e2e.**
+**Current state: milestone 5 — observability complete. `internal/observ`:
+zap logger (console/json from config), Prometheus metric set
+(connections accepted/rejected, requests by device × outcome
+[forwarded / exception_device / exception_policy / exception_rate],
+upstream errors, stale discards, reconnects, device_up gauges, per-device
+latency histograms), zap-agnostic `proxy.Metrics` interface injected into
+the gateway/upstream (nil-safe `nopMetrics` fallback). E2E metric
+assertions in `metrics_test.go` (5 tests) + observ unit tests. Full
+suite green under `-race`; staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -60,9 +59,9 @@ goroutine-leak regression, rate-limit burst/refill/e2e.**
 | `internal/mbtcp`: MBAP header build/parse (single parser, fuzz-ready), ADU cap, unit-ID types | done |
 | `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | YAML done (flags mode lands with the CLI milestone) |
 | Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | done |
-| Multiplexing + fairness + backpressure (goroutine-leak regression test) | done (rate limit still open, tracked with ACL row) |
+| Multiplexing + fairness + backpressure (goroutine-leak regression test) | done |
 | ACLs + read-only policy + shielding limits (conn cap, rate limit) | done (all: read-only, conn cap, rate limit) |
-| Observability (Prometheus + zap) | pending |
+| Observability (Prometheus + zap) | done |
 | CLI: `validate` / `selftest` / flags mode / `version` | pending |
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | pending |
 | Docs: README (why/deployment shapes/decision guidance), examples, systemd units | pending |
@@ -86,7 +85,7 @@ internal/mbtcp/            MBAP header build/parse (mbtcp.go, fuzz_test.go + uni
 internal/config/           YAML config (config.go + tests); flags overrides land with CLI
 internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
-internal/observ/           zap logging + Prometheus metrics
+internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
 configs/                   example YAML templates
 scripts/                   smoke + interop scripts (mbpoll), SBOM entry point
 deploy/                    hardened systemd unit files
@@ -136,7 +135,9 @@ or set `-timeout` on `go test` (network tests would hang without one).
 ## 6. Key Dependencies (go.mod)
 
 - `gopkg.in/yaml.v3 v3.0.1` (milestone 2; govulncheck-clean)
-- planned: `prometheus/client_golang`, `spf13/pflag`, `go.uber.org/zap`
+- `github.com/prometheus/client_golang v1.23.2` (milestone 5; govulncheck-clean)
+- `go.uber.org/zap v1.27.0` (milestone 5; govulncheck-clean)
+- planned: `spf13/pflag`
 - Modbus protocol handling is implemented in-house on `encoding/binary`
   (full parser control for fuzzability); a client lib (e.g. grid-x/modbus)
   is only considered for the `selftest` probe — to be decided at that
@@ -223,6 +224,24 @@ or set `-timeout` on `go test` (network tests would hang without one).
   never consume rate tokens), then rate limit, then remap + exchange.
   Rate-rejected requests get exception 0x06 Server Device Busy (spec:
   "client should retry later") and the device never sees them.
+- **`proxy.Metrics` interface contract** (logger.go, implemented by
+  `internal/observ.Metrics`): every method nil-safe — call sites never
+  check for nil; `metricsOrNop(met)` normalizes nil to `nopMetrics{}` at
+  construction. Outcome labels on `requests_total`: forwarded |
+  exception_device (upstream error) | exception_policy (read-only) |
+  exception_rate (rate limiter). Connection counters increment in the
+  Serve loop (not admit), so rejections by cap AND ACL both count.
+  device_up/reconnects/latency live in `upstream` (reconnects counts
+  every successful dial, so the initial connect counts too). Per-device
+  latency histograms register lazily (map + mutex) — Prometheus
+  AlreadyRegisteredError avoided by pre-map registration.
+- **`internal/observ` wiring**: `Log(level, format)` maps config
+  console→zap development config, json→production config;
+  `AsProxyLogger(l *zap.Logger)` returns `l.Sugar()` — *zap.SugaredLogger
+  satisfies `proxy.Logger` directly (its formatted methods match the
+  signature exactly); do NOT wrap it again (infinite recursion risk).
+  Never name a struct field after a method you also delegate (`Debugf`
+  field + `Debugf` method = recursion).
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,

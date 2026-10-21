@@ -10,10 +10,10 @@ func TestIsWrite(t *testing.T) {
 		fc   uint8
 		want bool
 	}{
-		{1, false}, {2, false}, {3, false}, {4, false},          // reads
-		{5, true}, {6, true}, {15, true}, {16, true},            // writes
-		{21, true}, {22, true}, {23, true},                      // file/mask/rw
-		{7, false}, {8, false}, {17, false}, {24, false},        // diagnostics/fifo
+		{1, false}, {2, false}, {3, false}, {4, false}, // reads
+		{5, true}, {6, true}, {15, true}, {16, true}, // writes
+		{21, true}, {22, true}, {23, true}, // file/mask/rw
+		{7, false}, {8, false}, {17, false}, {24, false}, // diagnostics/fifo
 		{0x81, false}, // exception responses are not writes
 	}
 	for _, c := range cases {

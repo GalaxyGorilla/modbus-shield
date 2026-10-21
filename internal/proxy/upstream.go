@@ -30,14 +30,16 @@ var ErrDeviceUnreachable = errors.New("proxy: device unreachable")
 // bounded backoff between attempts.
 type upstream struct {
 	addr string
+	name string // config device name (metrics + logs)
 	log  Logger
+	met  Metrics
 
 	mu   sync.Mutex
 	conn net.Conn
 }
 
-func newUpstream(addr string, log Logger) *upstream {
-	return &upstream{addr: addr, log: log}
+func newUpstream(addr, name string, log Logger, met Metrics) *upstream {
+	return &upstream{addr: addr, name: name, log: log, met: metricsOrNop(met)}
 }
 
 // exchange forwards req to the device and returns the matching response.
@@ -67,6 +69,7 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration) (mbtcp.ADU, er
 			// The stream is frame-aligned, so skipping is safe.
 			u.log.Debugf("device %s: discarding stale response (txn %d, want %d)",
 				u.addr, resp.Header.TransactionID, req.Header.TransactionID)
+			u.met.IncStaleDiscard()
 			continue
 		}
 		return resp, nil
@@ -92,6 +95,8 @@ func (u *upstream) ensureConn(deadline time.Time) (net.Conn, error) {
 		conn, err := net.DialTimeout("tcp", u.addr, dialTimeout)
 		if err == nil {
 			u.conn = conn
+			u.met.IncReconnect()
+			u.met.SetDeviceUp(u.name, true)
 			u.log.Debugf("device %s: connected", u.addr)
 			return conn, nil
 		}
@@ -119,6 +124,7 @@ func (u *upstream) drop(conn net.Conn) {
 		u.conn = nil
 	}
 	conn.Close()
+	u.met.SetDeviceUp(u.name, false)
 	u.log.Debugf("device %s: connection dropped", u.addr)
 }
 
@@ -130,4 +136,5 @@ func (u *upstream) close() {
 		u.conn.Close()
 		u.conn = nil
 	}
+	u.met.SetDeviceUp(u.name, false)
 }

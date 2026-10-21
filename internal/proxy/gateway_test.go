@@ -40,7 +40,7 @@ func startGateway(t *testing.T, dev config.Device) string {
 	dev.ListenAddr = "127.0.0.1:0"
 	cfg := &config.Config{Devices: []config.Device{dev}}
 	cfg.Defaults()
-	r, err := NewRunner(cfg, nopLogger{})
+	r, err := NewRunner(cfg, nopLogger{}, nil)
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
@@ -87,6 +87,29 @@ func readOn(t *testing.T, conn net.Conn) (uint16, error) {
 		return 0, fmt.Errorf("device exception: code=%d", code)
 	}
 	return binary.BigEndian.Uint16(resp.PDU[2:4]), nil
+}
+
+// writeSingle sends one write-single-register (FC 6) request on an open
+// front-leg connection and returns the response ADU.
+func writeSingle(t *testing.T, conn net.Conn, reg, val uint16) mbtcp.ADU {
+	t.Helper()
+	pdu := []byte{6, byte(reg >> 8), byte(reg), byte(val >> 8), byte(val)}
+	adu, err := mbtcp.NewADU(0x4242, 1, pdu)
+	if err != nil {
+		t.Fatalf("NewADU: %v", err)
+	}
+	if _, err := conn.Write(adu.Frame()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	resp, err := mbtcp.ReadADU(conn)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.Header.TransactionID != 0x4242 || resp.Header.UnitID != 1 {
+		t.Fatalf("correlation failed: %+v", resp.Header)
+	}
+	return resp
 }
 
 // TestGatewayEndToEnd is the milestone acceptance: a client reads a fake
@@ -210,7 +233,7 @@ func TestUpstreamStaleDiscardUnit(t *testing.T) {
 		}
 	}()
 
-	u := newUpstream(ln.Addr().String(), nopLogger{})
+	u := newUpstream(ln.Addr().String(), "test-dev", nopLogger{}, nil)
 	defer u.close()
 
 	req, _ := mbtcp.NewADU(1, 1, []byte{3, 0x00, 0x00, 0x00, 0x01})

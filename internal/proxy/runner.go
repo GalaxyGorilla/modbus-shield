@@ -12,17 +12,20 @@ import (
 // validated config; Run blocks until Stop.
 type Runner struct {
 	log   Logger
+	met   Metrics
 	gws   []*gateway
 	lns   []net.Listener
 	wg    sync.WaitGroup
 	bound chan struct{}
 }
 
-// NewRunner builds one gateway per config device.
-func NewRunner(cfg *config.Config, log Logger) (*Runner, error) {
-	r := &Runner{log: log, bound: make(chan struct{})}
+// NewRunner builds one gateway per config device. met may be nil
+// (no metrics).
+func NewRunner(cfg *config.Config, log Logger, met Metrics) (*Runner, error) {
+	met = metricsOrNop(met)
+	r := &Runner{log: log, met: met, bound: make(chan struct{})}
 	for i := range cfg.Devices {
-		gw, err := newGateway(cfg.Devices[i], log)
+		gw, err := newGateway(cfg.Devices[i], log, met)
 		if err != nil {
 			return nil, err
 		}

@@ -30,20 +30,24 @@ type gateway struct {
 	// lim enforces rate_per_sec on the front leg (shielding); nil when
 	// rate_per_sec is 0 (unlimited).
 	lim *rateLimiter
+
+	// met is the observability hook; never nil (normalized to a no-op).
+	met Metrics
 }
 
-func newGateway(dev config.Device, log Logger) (*gateway, error) {
+func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 	allow, err := acl.NewList(dev.Allow)
 	if err != nil {
 		return nil, fmt.Errorf("device %s: %w", dev.Name, err)
 	}
 	return &gateway{
 		dev:        dev,
-		up:         newUpstream(dev.DeviceAddr, log),
+		up:         newUpstream(dev.DeviceAddr, dev.Name, log, met),
 		log:        log,
 		allow:      allow,
 		maxClients: int64(dev.MaxClients),
 		lim:        newRateLimiter(dev.RatePerSec),
+		met:        metricsOrNop(met),
 	}, nil
 }
 
@@ -58,8 +62,10 @@ func (g *gateway) Serve(ln net.Listener) error {
 			return err // listener closed or fatal; caller decides
 		}
 		if !g.admit(conn) {
+			g.met.IncConnRejected()
 			continue
 		}
+		g.met.IncConnAccepted()
 		go func() {
 			defer g.clients.Add(-1)
 			g.handleClient(conn)
@@ -125,6 +131,7 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 	if g.dev.ReadOnly && acl.IsWrite(req.FunctionCode()) {
 		g.log.Infof("gateway %s: %s: blocked write FC %d (read-only)",
 			g.dev.Name, conn.RemoteAddr(), req.FunctionCode())
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionPolicy)
 		return g.exception(req, clientUnit, mbtcp.ExceptionIllegalFunction)
 	}
 
@@ -133,6 +140,7 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 	if g.lim != nil && !g.lim.Allow() {
 		g.log.Warnf("gateway %s: %s: rate limit (%d/s) exceeded, FC %d rejected",
 			g.dev.Name, conn.RemoteAddr(), g.dev.RatePerSec, req.FunctionCode())
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
 		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
 	}
 
@@ -141,12 +149,17 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 		req.Header.UnitID = g.dev.UpstreamUnitID()
 	}
 
+	start := time.Now()
 	resp, err := g.up.exchange(req, g.dev.RequestTimeout())
+	g.met.ObserveLatency(g.dev.Name, time.Since(start))
 	if err != nil {
 		g.log.Warnf("gateway %s: %s: upstream error: %v",
 			g.dev.Name, conn.RemoteAddr(), err)
+		g.met.IncUpstreamError()
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionDevice)
 		return g.exception(req, clientUnit, mbtcp.ExceptionGatewayTargetFail)
 	}
+	g.met.ObserveRequest(g.dev.Name, outcomeForwarded)
 	if g.dev.HasUnitRemap() {
 		resp.Header.UnitID = clientUnit
 	}
@@ -181,6 +194,34 @@ func remoteIP(conn net.Conn) net.IP {
 
 // writeTimeout bounds a front-leg response write.
 const writeTimeout = 10 * time.Second
+
+// Request outcome labels for the metrics hook.
+const (
+	outcomeForwarded       = "forwarded"
+	outcomeExceptionDevice = "exception_device" // upstream dial/timeout/read/write error
+	outcomeExceptionPolicy = "exception_policy" // read-only blocked write
+	outcomeExceptionRate   = "exception_rate"   // rate limiter rejection
+)
+
+// metricsOrNop normalizes a nil metrics hook to a concurrency-safe no-op.
+func metricsOrNop(m Metrics) Metrics {
+	if m == nil {
+		return nopMetrics{}
+	}
+	return m
+}
+
+// nopMetrics is the "no metrics" implementation; every method is a no-op.
+type nopMetrics struct{}
+
+func (nopMetrics) IncConnAccepted()                     {}
+func (nopMetrics) IncConnRejected()                     {}
+func (nopMetrics) ObserveRequest(string, string)        {}
+func (nopMetrics) ObserveLatency(string, time.Duration) {}
+func (nopMetrics) IncUpstreamError()                    {}
+func (nopMetrics) IncStaleDiscard()                     {}
+func (nopMetrics) IncReconnect()                        {}
+func (nopMetrics) SetDeviceUp(string, bool)             {}
 
 // deadlineFromNow returns a connection deadline duration from now.
 func deadlineFromNow(d time.Duration) time.Time { return time.Now().Add(d) }
