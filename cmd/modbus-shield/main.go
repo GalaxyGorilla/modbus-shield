@@ -96,6 +96,7 @@ type cliFlags struct {
 	tlsCert      *string
 	tlsKey       *string
 	tlsClientCA  *string
+	mbapsRoles   *[]string
 	devTLSCA     *string
 	devTLSSNI    *string
 	devTLSCert   *string
@@ -128,6 +129,7 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.tlsCert = fs.String("tls-cert", "", "front-leg TLS server certificate (PEM; enables TLS termination)")
 	c.tlsKey = fs.String("tls-key", "", "front-leg TLS server key (PEM)")
 	c.tlsClientCA = fs.String("tls-client-ca", "", "client certificate CA (PEM; enables mTLS: clients must present a signed cert)")
+	c.mbapsRoles = fs.StringArray("mbaps-role", nil, "mbaps role authorization: ROLE=FC,FC,... (repeatable; requires --tls-client-ca; clients need the Modbus role cert extension)")
 	c.devTLSCA = fs.String("device-tls-ca", "", "upstream TLS CA (PEM; verifies the far box's certificate; empty = system roots)")
 	c.devTLSSNI = fs.String("device-tls-server-name", "", "upstream TLS server-name override (when the far box presents a different name)")
 	c.devTLSCert = fs.String("device-tls-cert", "", "upstream TLS client certificate (PEM; mTLS toward the far box)")
@@ -194,6 +196,17 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 			Key:        *c.devTLSKey,
 		}
 	}
+	if len(*c.mbapsRoles) > 0 {
+		roles := make(map[string][]int, len(*c.mbapsRoles))
+		for _, spec := range *c.mbapsRoles {
+			role, codes, err := parseMBAPSRoleSpec(spec)
+			if err != nil {
+				return nil, err
+			}
+			roles[role] = codes
+		}
+		dev.MBAPS = &config.MBAPSConfig{Roles: roles}
+	}
 	cfg := &config.Config{
 		Devices: []config.Device{dev},
 		Log:     config.LogConfig{Level: *c.logLevel, Format: *c.logFormat},
@@ -212,6 +225,24 @@ func loadChecked(c cliFlags) (*config.Config, error) {
 		return config.Load(*c.configPath)
 	}
 	return flagsConfig(c)
+}
+
+// parseMBAPSRoleSpec parses a --mbaps-role entry "ROLE=FC,FC,..." into
+// the role name and its allowed function codes.
+func parseMBAPSRoleSpec(spec string) (string, []int, error) {
+	role, codes, found := strings.Cut(spec, "=")
+	if !found || role == "" || codes == "" {
+		return "", nil, fmt.Errorf("--mbaps-role must be ROLE=FC,FC,..., got %q", spec)
+	}
+	var out []int
+	for _, part := range strings.Split(codes, ",") {
+		fc, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil {
+			return "", nil, fmt.Errorf("--mbaps-role %s: bad function code %q", spec, part)
+		}
+		out = append(out, fc)
+	}
+	return role, out, nil
 }
 
 // check is one selftest/validate result line.
@@ -518,7 +549,8 @@ Usage (flags, no config file — plug and play):
       [--request-delay-ms <ms>] [--idle-timeout-ms <ms>] \
       [--extra-listen <ip:port>]... \
       [--health-unit-id <id>] \
-      [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]] \
+      [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem> \
+       [--mbaps-role <role>=<fc,fc,...>]...]] \
       [--device-tls-ca <pem> [--device-tls-server-name <name>] \
        [--device-tls-cert <pem> --device-tls-key <pem>]] \
       [--metrics-addr <addr>] [--log-level <lvl>] [--log-format <fmt>]
@@ -535,6 +567,11 @@ picky legacy devices; --idle-timeout-ms reaps front connections idle
 longer than the TTL (frees connection-cap slots from dead pollers).
 With --tls-cert/--tls-key the front leg terminates TLS (add
 --tls-client-ca for mTLS); the device-side wire stays plain Modbus TCP.
+With --mbaps-role the mbaps role authorization mode is enabled (requires
+mTLS): clients must carry a role in the Modbus role certificate extension
+(OID 1.3.6.1.4.1.50316.802.1) and each request is checked against the
+role's allowed function codes; clients without a configured role are
+denied every device request.
 With --device-tls-* the upstream leg is secured instead: the box dials
 the device over TLS — the far side is a second modbus-shield gateway
 whose front leg terminates TLS in front of the local device (two-proxy

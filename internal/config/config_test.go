@@ -1,6 +1,15 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +24,102 @@ func writeTemp(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// tlsChainFiles builds a minimal throwaway ECDSA P-256 PKI for config
+// tests that reference certificate files (B12 validation tests): a
+// self-signed CA, a server cert with IP SAN 127.0.0.1, and a client
+// cert. Config validation only checks file readability, so no TLS
+// handshake is exercised here (the proxy package covers that e2e).
+func tlsChainFiles(t *testing.T) (serverCert, serverKey, clientCA, clientCert, clientKey string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "config test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srvKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	srvDER, err := x509.CreateCertificate(rand.Reader, srvTmpl, mustParseCert(t, caDER), &srvKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "config test client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	cliDER, err := x509.CreateCertificate(rand.Reader, cliTmpl, mustParseCert(t, caDER), &cliKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serverCert, serverKey = filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key")
+	clientCA = filepath.Join(dir, "client-ca.crt")
+	clientCert, clientKey = filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	writeFile := func(path string, typ string, der []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(serverCert, "CERTIFICATE", srvDER)
+	writeFile(serverKey, "EC PRIVATE KEY", mustMarshalECKey(t, srvKey))
+	writeFile(clientCA, "CERTIFICATE", caDER)
+	writeFile(clientCert, "CERTIFICATE", cliDER)
+	writeFile(clientKey, "EC PRIVATE KEY", mustMarshalECKey(t, cliKey))
+	return serverCert, serverKey, clientCA, clientCert, clientKey
+}
+
+func mustParseCert(t *testing.T, der []byte) *x509.Certificate {
+	t.Helper()
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func mustMarshalECKey(t *testing.T, k *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	kb, err := x509.MarshalECPrivateKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})
 }
 
 func TestLoadValidMultiDevice(t *testing.T) {
@@ -521,5 +626,106 @@ devices:
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
+	}
+}
+
+// TestMBAPSParsing covers the B12 YAML block: role-to-FC mapping parses
+// and the accessors resolve rights.
+func TestMBAPSParsing(t *testing.T) {
+	serverCert, serverKey, clientCA, _, _ := tlsChainFiles(t)
+	path := writeTemp(t, fmt.Sprintf(`
+devices:
+  - name: secure-plc
+    listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+    tls:
+      cert: %s
+      key: %s
+      client_ca: %s
+    mbaps:
+      roles:
+        operator: [1, 2, 3, 4]
+        engineer: [1, 2, 3, 4, 5, 6, 15, 16]
+`, serverCert, serverKey, clientCA))
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasMBAPS() {
+		t.Fatal("HasMBAPS() = false, want true")
+	}
+	if codes, ok := d.MBAPSRoleRights("operator"); !ok || len(codes) != 4 || codes[0] != 1 {
+		t.Fatalf("operator rights = %v, ok=%v", codes, ok)
+	}
+	if codes, ok := d.MBAPSRoleRights("engineer"); !ok || len(codes) != 8 {
+		t.Fatalf("engineer rights = %v, ok=%v", codes, ok)
+	}
+	if _, ok := d.MBAPSRoleRights("ghost"); ok {
+		t.Fatal("ghost role should have no rights")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+// TestMBAPSValidateErrors covers the B12 config validation: mTLS is
+// mandatory (mbaps without tls/client_ca), roles must exist and carry
+// valid function codes.
+func TestMBAPSValidateErrors(t *testing.T) {
+	serverCert, serverKey, clientCA, _, _ := tlsChainFiles(t)
+	cases := []struct {
+		name string
+		tls  string
+		mb   string
+		want string
+	}{
+		{
+			name: "no tls at all",
+			tls:  "",
+			mb:   "    mbaps:\n      roles:\n        operator: [1, 2, 3]\n",
+			want: "mbaps requires tls with client_ca",
+		},
+		{
+			name: "tls without client_ca",
+			tls:  fmt.Sprintf("    tls:\n      cert: %s\n      key: %s\n", serverCert, serverKey),
+			mb:   "    mbaps:\n      roles:\n        operator: [1, 2, 3]\n",
+			want: "mbaps requires tls with client_ca",
+		},
+		{
+			name: "empty roles map",
+			tls:  fmt.Sprintf("    tls:\n      cert: %s\n      key: %s\n      client_ca: %s\n", serverCert, serverKey, clientCA),
+			mb:   "    mbaps: {}\n",
+			want: "at least one role must be defined",
+		},
+		{
+			name: "role without codes",
+			tls:  fmt.Sprintf("    tls:\n      cert: %s\n      key: %s\n      client_ca: %s\n", serverCert, serverKey, clientCA),
+			mb:   "    mbaps:\n      roles:\n        operator: []\n",
+			want: "at least one function code",
+		},
+		{
+			name: "invalid function code",
+			tls:  fmt.Sprintf("    tls:\n      cert: %s\n      key: %s\n      client_ca: %s\n", serverCert, serverKey, clientCA),
+			mb:   "    mbaps:\n      roles:\n        operator: [0]\n",
+			want: "invalid function code 0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTemp(t, fmt.Sprintf(`
+devices:
+  - name: secure-plc
+    listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+%s%s`, tc.tls, tc.mb))
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("%s: want error, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s: error %q, want substring %q", tc.name, err, tc.want)
+			}
+		})
 	}
 }

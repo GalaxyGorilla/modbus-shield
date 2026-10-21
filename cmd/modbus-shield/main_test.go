@@ -4,11 +4,19 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GalaxyGorilla/modbus-shield/internal/mbtcp"
 	"github.com/spf13/pflag"
@@ -267,4 +275,143 @@ func TestUsage(t *testing.T) {
 	if !strings.Contains(string(buf[:n]), "modbus-shield") {
 		t.Fatalf("usage output missing program name")
 	}
+}
+
+// TestParseMBAPSRoleSpec covers the --mbaps-role entry parser (B12).
+func TestParseMBAPSRoleSpec(t *testing.T) {
+	role, codes, err := parseMBAPSRoleSpec("operator=1,2,3,4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if role != "operator" || len(codes) != 4 || codes[0] != 1 || codes[3] != 4 {
+		t.Fatalf("role=%q codes=%v", role, codes)
+	}
+	if _, _, err := parseMBAPSRoleSpec("operator"); err == nil {
+		t.Fatal("missing = should fail")
+	}
+	if _, _, err := parseMBAPSRoleSpec("=1,2"); err == nil {
+		t.Fatal("empty role should fail")
+	}
+	if _, _, err := parseMBAPSRoleSpec("operator="); err == nil {
+		t.Fatal("empty codes should fail")
+	}
+	if _, _, err := parseMBAPSRoleSpec("operator=1,abc"); err == nil {
+		t.Fatal("bad code should fail")
+	}
+}
+
+// TestFlagsConfigMBAPS wires --mbaps-role through flagsConfig (B12).
+func TestFlagsConfigMBAPS(t *testing.T) {
+	serverCert, serverKey, clientCA, _, _ := tlsChainFilesCmd(t)
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	c := register(fs)
+	fs.Set("listen", "127.0.0.1:5020")
+	fs.Set("device", "127.0.0.1:502")
+	fs.Set("tls-cert", serverCert)
+	fs.Set("tls-key", serverKey)
+	fs.Set("tls-client-ca", clientCA)
+	if err := fs.Parse([]string{"--mbaps-role", "operator=1,2,3,4"}); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	cfg, err := flagsConfig(c)
+	if err != nil {
+		t.Fatalf("flagsConfig: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasMBAPS() {
+		t.Fatal("HasMBAPS() = false, want true")
+	}
+	if codes, ok := d.MBAPSRoleRights("operator"); !ok || len(codes) != 4 {
+		t.Fatalf("operator rights = %v ok=%v", codes, ok)
+	}
+}
+
+// tlsChainFilesCmd mirrors the config-package PKI helper: a throwaway
+// ECDSA P-256 CA + server cert (IP SAN) + client cert for flag tests
+// that only need readable PEM files (validation-level checks).
+func tlsChainFilesCmd(t *testing.T) (serverCert, serverKey, clientCA, clientCert, clientKey string) {
+	t.Helper()
+	dir := t.TempDir()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "cmd test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	srvDER, err := x509.CreateCertificate(rand.Reader, srvTmpl, mustParseCmdCert(t, caDER), &srvKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "cmd test client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	cliDER, err := x509.CreateCertificate(rand.Reader, cliTmpl, mustParseCmdCert(t, caDER), &cliKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCert, serverKey = filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key")
+	clientCA, clientCert, clientKey = filepath.Join(dir, "ca.crt"), filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	w := func(path, typ string, der []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w(serverCert, "CERTIFICATE", srvDER)
+	w(serverKey, "EC PRIVATE KEY", mustCmdECKey(t, srvKey))
+	w(clientCA, "CERTIFICATE", caDER)
+	w(clientCert, "CERTIFICATE", cliDER)
+	w(clientKey, "EC PRIVATE KEY", mustCmdECKey(t, cliKey))
+	return serverCert, serverKey, clientCA, clientCert, clientKey
+}
+
+func mustParseCmdCert(t *testing.T, der []byte) *x509.Certificate {
+	t.Helper()
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func mustCmdECKey(t *testing.T, k *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	kb, err := x509.MarshalECPrivateKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})
 }

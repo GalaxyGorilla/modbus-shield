@@ -34,7 +34,7 @@ serial ports.
 | Language | **Go** (chosen deliberately: static single binary for appliance use, goroutines/channels map 1:1 onto the multiplexer, race detector + native fuzzing for the "well tested" bar; snmp-shield sibling synergy) |
 | Protocol scope | **Modbus TCP only** (v1) — no RTU framing, no local serial ports; unit-ID remap covers serial converters that expose Modbus TCP |
 | Primary shape | **Gateway reverse proxy** (clients repointed to the box IP); transparent bump-in-the-wire is backlog B3; two-proxy secured line is B2 |
-| Security v1 | **IP ACLs + function-code policy (read-only) + shielding limits** (conn cap + rate limit); TLS front leg is B1 |
+| Security v1 | **IP ACLs + function-code policy (read-only) + shielding limits** (conn cap + rate limit); TLS front leg is B1; per-role FC rights over mTLS (mbaps mode) is B12 |
 | Caching | **None** — exactly transparent semantics (opt-in TTL cache is B8) |
 | Transport level | Parse the 7-byte MBAP header, forward the PDU as an **opaque blob** — vendor register-map/encoding chaos flows through untouched |
 | Correlation posture | **Strict on framing, liberal on correlation** — real devices deviate (wonky txn-ID echo, unit-ID swaps) |
@@ -46,17 +46,18 @@ serial ports.
 **Current state: v1 feature-complete + B1 (TLS front leg) + B2 (two-proxy
 secured line) + B4 (health-via-Modbus) + B5 (inter-request pacing) + B6
 (idle client timeout) + B9 (connection-ID logging) + B10 (multiple
-listeners per device) + B11 (systemd watchdog). Per-device `tls:` block
-terminates TLS on the front leg; `device_tls:` block
-(`ca_cert`/`server_name`/`cert`/`key`) secures the upstream leg;
-`health_unit_id` exposes 18 proxy health registers on a virtual unit-ID;
-`request_delay_ms` paces picky devices; `idle_timeout_ms` reaps dead
-clients; every client and device log line carries a per-gateway
-`[conn N]` ID; `extra_listen` adds front doors that share one upstream
-connection and all shielding limits; the gateway speaks sd_notify
-(`READY=1` + `WATCHDOG=1` pings, internal/watchdog) and the deploy unit
-is `Type=notify` + `WatchdogSec=30`. Full suite green under `-race`;
-staticcheck + govulncheck clean.**
+listeners per device) + B11 (systemd watchdog) + B12 (mbaps role
+authorization). Per-device `tls:` block terminates TLS on the front leg;
+`device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`) secures the
+upstream leg; `health_unit_id` exposes 18 proxy health registers on a
+virtual unit-ID; `request_delay_ms` paces picky devices;
+`idle_timeout_ms` reaps dead clients; every client and device log line
+carries a per-gateway `[conn N]` ID; `extra_listen` adds front doors
+that share one upstream connection and all shielding limits; the gateway
+speaks sd_notify (`READY=1` + `WATCHDOG=1` pings, internal/watchdog) and
+the deploy unit is `Type=notify` + `WatchdogSec=30`; `mbaps:` enforces
+per-role function-code rights from client-cert roles over mandatory
+mTLS. Full suite green under `-race`; staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -78,6 +79,7 @@ staticcheck + govulncheck clean.**
 | B9: connection-ID logging (`[conn N]` in client + device log lines) | done (connSeq counter, exchange takes connID, smoke-connid.sh) |
 | B10: multiple listeners per device (`extra_listen` + `--extra-listen`) | done (config/proxy/CLI/tests; one upstream shared by all doors) |
 | B11: systemd watchdog (`Type=notify` + `WatchdogSec`, sd_notify pings) | done (internal/watchdog + tests + real-binary smoke; deploy unit updated) |
+| B12: mbaps role authorization (`mbaps:` block + `--mbaps-role`, per-role FC rights over mTLS) | done (config/proxy/CLI/tests + examples/mbaps.md + real-binary smoke) |
 
 ### Verification targets (from the plan)
 
@@ -103,7 +105,7 @@ internal/watchdog/         sd_notify wrapper (READY + watchdog pings; no-ops out
 configs/                   example YAML templates
 scripts/                   interop-modbus.sh (real mbpoll), fakedevice.py, smoke scripts, SBOM entry point
 deploy/                    hardened systemd unit files
-examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md, two-proxy.md
+examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md, two-proxy.md, mbaps.md, health.md
 ```
 
 (All directories populated as of v1 feature-complete; see individual
@@ -362,6 +364,30 @@ or set `-timeout` on `go test` (network tests would hang without one).
   error → exception 0x0B; the device never sees rejected TLS.
   Test-lesson reuse: `tlsChain` PKI helper shared; second `tlsChain`
   call yields an unrelated CA for bad-CA tests.
+- **mbaps role-authorization contract (B12)** (`internal/proxy/mbaps.go`
+  + `config.MBAPSConfig`): per-device `mbaps:` block with `roles:` map
+  (role name -> allowed function codes) + repeatable
+  `--mbaps-role ROLE=FC,FC,...` flag. **mTLS is mandatory**: Validate
+  rejects `mbaps` without `tls:` + `client_ca` (spec R-02/R-06). The
+  role lives in the client cert's Modbus role extension (OID
+  1.3.6.1.4.1.50316.802.1, value ASN.1 UTF8String, R-21/R-22; one role
+  per cert R-65) — extracted once per connection in `handleClient` via
+  an EAGER, deadline-bounded `tc.Handshake()` in the handler goroutine
+  (safe: never in the accept loop), then
+  `ConnectionState().PeerCertificates[0]`. Rights resolution: role not
+  in the map or malformed/missing extension → nil set = deny every
+  device request (NULL role, R-23). Enforcement in `serve()` sits AFTER
+  the health check (health/monitoring bypasses role rights, same
+  posture as read-only/rate-limit) and BEFORE read-only; denial =
+  exception 0x01 Illegal Function (R-31), metric outcome
+  `exception_authz`, health counter `incPolicy()` (register map
+  unchanged). Test PKI: `tlsChainMulti(t, []clientSpec{{CN, Role}})`
+  builds certs with `ExtraExtensions` carrying
+  `asn1.Marshal(role)` (UTF8String); `tlsChain` wraps it for the
+  single-no-role-client case. Verified by e2e tests (role policy,
+  unconfigured role, health bypass) + real-binary smoke with OpenSSL
+  certs (`1.3.6.1.4.1.50316.802.1=ASN1:UTF8String:operator` ext line).
+  Full port-802 mbaps conformance stays out of scope.
 - **systemd watchdog contract (B11)** (`internal/watchdog`, wrapper on
   coreos/go-systemd/v22 `daemon`): `Interval()` = `SdWatchdogEnabled`
   (0 when not under systemd), `NotifyReady()` sends `READY=1`,

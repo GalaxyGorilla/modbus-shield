@@ -93,6 +93,26 @@ type Device struct {
 	// responsive during a shielding event; the allow-list and connection
 	// cap still apply.
 	HealthUnitID *uint8 `yaml:"health_unit_id"`
+
+	// MBAPS, when set, enables the MODBUS/TCP Security (mbaps) role
+	// authorization mode (B12): clients must connect over mTLS (tls with
+	// client_ca is mandatory, spec R-02) and carry a role in the mbaps
+	// role certificate extension (OID 1.3.6.1.4.1.50316.802.1, ASN.1
+	// UTF8String, R-21/R-22). Each request is checked against the
+	// role's allowed function codes (R-31); a client without a role
+	// (NULL role, R-23) or with an unconfigured role is denied every
+	// device request. Health reads (health_unit_id) bypass this check.
+	MBAPS *MBAPSConfig `yaml:"mbaps"`
+}
+
+// MBAPSConfig configures the mbaps role-authorization mode (B12). The
+// Roles-to-Rights mapping is vendor-specific per the spec (R-24/R-25);
+// here it is a role-name -> allowed function codes table.
+type MBAPSConfig struct {
+	// Roles maps a role name (from the client certificate's mbaps role
+	// extension) to the function codes that role may issue. A role not
+	// present here (and the NULL role) has no rights.
+	Roles map[string][]int `yaml:"roles"`
 }
 
 // TLSConfig configures front-leg TLS termination for a device.
@@ -262,6 +282,14 @@ func (c *Config) Validate() error {
 		if err := d.DeviceTLS.Validate(); err != nil {
 			return fmt.Errorf("config: %s: %w", label, err)
 		}
+		if err := d.MBAPS.Validate(); err != nil {
+			return fmt.Errorf("config: %s: %w", label, err)
+		}
+		// B12: mbaps role authorization is only defined over mTLS
+		// (spec R-02/R-06: mutual authentication is mandatory).
+		if d.HasMBAPS() && !d.HasClientCA() {
+			return fmt.Errorf("config: %s: mbaps requires tls with client_ca (mandatory mutual auth)", label)
+		}
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
@@ -327,6 +355,18 @@ func (d *Device) HasHealth() bool { return d.HealthUnitID != nil }
 // HasHealth() is true).
 func (d *Device) HealthUnitIDValue() uint8 { return *d.HealthUnitID }
 
+// HasMBAPS reports whether the mbaps role-authorization mode (B12) is
+// configured for this device.
+func (d *Device) HasMBAPS() bool { return d.MBAPS != nil }
+
+// MBAPSRoleRights returns the allowed function codes for a role (call
+// only when HasMBAPS() is true). ok=false means the role has no rights
+// (unconfigured or NULL role).
+func (d *Device) MBAPSRoleRights(role string) ([]int, bool) {
+	codes, ok := d.MBAPS.Roles[role]
+	return codes, ok
+}
+
 // Validate checks a TLS configuration block: cert and key are
 // both-or-neither, client_ca requires cert/key, and all configured files
 // must be readable at validate time.
@@ -367,6 +407,33 @@ func (t *DeviceTLSConfig) Validate() error {
 		}
 		if _, err := os.ReadFile(f); err != nil {
 			return fmt.Errorf("device_tls: %s: %w", f, err)
+		}
+	}
+	return nil
+}
+
+// Validate checks an mbaps role-authorization config block (B12): mTLS
+// (tls with client_ca) is mandatory per spec R-02/R-06, at least one
+// role must be defined, and function codes must be in the Modbus range
+// (1..255; 0 is not a function code).
+func (m *MBAPSConfig) Validate() error {
+	if m == nil {
+		return nil
+	}
+	if len(m.Roles) == 0 {
+		return fmt.Errorf("mbaps: at least one role must be defined")
+	}
+	for role, codes := range m.Roles {
+		if role == "" {
+			return fmt.Errorf("mbaps: role name must not be empty")
+		}
+		if len(codes) == 0 {
+			return fmt.Errorf("mbaps: role %s: at least one function code is required", role)
+		}
+		for _, fc := range codes {
+			if fc < 1 || fc > 255 {
+				return fmt.Errorf("mbaps: role %s: invalid function code %d (must be 1-255)", role, fc)
+			}
 		}
 	}
 	return nil

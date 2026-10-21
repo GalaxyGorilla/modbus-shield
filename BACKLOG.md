@@ -6,11 +6,23 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
 | # | Item | Technology / notes |
 |---|---|---|
 | B3 | **Transparent bump-in-the-wire mode** — L2 splice, zero client/device reconfiguration, cable-splice install; intercept port 502 inline, pass other traffic | **florianl/go-nfqueue** first candidate (MIT, netfilter queue API, needs CAP_NET_ADMIN); cilium/ebpf = later performance path (linux amd64/arm64 only). Design spike needed; Linux-only |
-| B12 | **mbaps conformance mode** — MODBUS/TCP Security profile (MB-TCP-Security-v36, 2021-07-30): mandatory mutual TLS, role-based AuthZ via client-cert OID 1.3.6.1.4.1.50316.802.1 (ASN1 UTF8String), AuthZ on every request, reject = exception 0x01, port 802 convention | our `tls:` front leg is already wire-compatible; adds: role extraction from client certs (x509 ext), per-connection role → per-request FC policy, mTLS-when-mbaps enforcement. Only valuable when a client ecosystem actually speaks mbaps — keep optional (per-listener `mbaps: true`) |
 | B7 | **RTU-over-TCP device side** — speak RTU framing (no MBAP) toward cheap converters that bridge raw serial over TCP | framing module extension |
 | B8 | **Opt-in TTL read cache** — serve repeated reads from memory to shield very slow devices from heavy polling | per-listener, TTL-based, OFF by default (staleness surprises in SCADA) |
 
 ## Done (kept for reference)
+
+- ~~B12 mbaps conformance mode~~ — **done** (role-authorization subset
+  of the MODBUS/TCP Security profile on the front leg): per-device
+  `mbaps:` block (`roles:` map role-name -> allowed function codes) +
+  repeatable `--mbaps-role ROLE=FC,FC,...` flag; mTLS mandatory
+  (requires `tls:` with `client_ca`, spec R-02/R-06); role extracted at
+  handshake from the Modbus role cert extension (OID
+  1.3.6.1.4.1.50316.802.1, ASN.1 UTF8String, R-21/R-22); every request
+  checked against the role's rights (R-31), denial = exception 0x01,
+  device never sees it; NULL role (no extension, R-23) and unconfigured
+  roles denied; health reads bypass role rights; new metric outcome
+  `exception_authz`. Full port-802 mbaps conformance stays out of scope
+  (retrofit clients don't speak it). See examples/mbaps.md.
 
 - ~~B11 systemd watchdog~~ — **done**: `internal/watchdog` (wrapper on
   coreos/go-systemd/v22 `daemon`); the gateway sends `READY=1` on

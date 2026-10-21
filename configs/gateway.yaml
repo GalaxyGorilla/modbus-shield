@@ -48,6 +48,10 @@ devices:
     #   server_name: farbox      # gateway with a tls: block; see
     #   cert: front.crt          # examples/two-proxy.md)
     #   key: front.key
+    # mbaps:                     # mbaps role authorization (requires tls +
+    #   roles:                   # client_ca above; see examples/mbaps.md):
+    #     operator: [1, 2, 3, 4]               # reads only
+    #     engineer: [1, 2, 3, 4, 5, 6, 15, 16] # reads + writes
 
   # Second device behind the same box, unrestricted reads/writes.
   - listen_addr: ":5021"

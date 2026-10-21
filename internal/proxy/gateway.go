@@ -52,6 +52,11 @@ type gateway struct {
 	// connSeq hands out per-gateway connection IDs (B9) so client-side
 	// and device-side log lines correlate on one ID.
 	connSeq atomic.Uint64
+
+	// mbaps maps role names (from client certificates' mbaps role
+	// extension) to their allowed function codes (B12); nil when the
+	// mbaps mode is disabled.
+	mbaps map[string]map[uint8]bool
 }
 
 func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
@@ -79,6 +84,17 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		health = newHealthRegistry()
 		healthUnitID = dev.HealthUnitIDValue()
 	}
+	var mbaps map[string]map[uint8]bool
+	if dev.HasMBAPS() {
+		mbaps = make(map[string]map[uint8]bool, len(dev.MBAPS.Roles))
+		for role, codes := range dev.MBAPS.Roles {
+			set := make(map[uint8]bool, len(codes))
+			for _, fc := range codes {
+				set[uint8(fc)] = true
+			}
+			mbaps[role] = set
+		}
+	}
 	up := newUpstream(dev.DeviceAddr, dev.Name, log, met)
 	up.tlsDial = devTLS
 	up.requestDelay = dev.RequestDelay()
@@ -94,6 +110,7 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		met:          metricsOrNop(met),
 		health:       health,
 		healthUnitID: healthUnitID,
+		mbaps:        mbaps,
 	}
 	up.connSeq = &g.connSeq
 	return g, nil
@@ -170,6 +187,44 @@ func (g *gateway) handleClient(conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
 	connID := g.connSeq.Add(1) // B9: correlate client + device log lines
+
+	// B12: in mbaps mode the client's role comes from its certificate.
+	// mTLS is mandatory in this mode (config validation enforces
+	// tls+client_ca), so the connection is always a *tls.Conn here. The
+	// handshake happens eagerly (bounded) in this handler goroutine —
+	// the accept loop is never blocked — and the extracted role applies
+	// to every request on the connection (spec: role extracted at
+	// handshake, cached for the session).
+	var mbapsRights map[uint8]bool // nil = deny every device request
+	if g.mbaps != nil {
+		tc, isTLS := conn.(*tls.Conn)
+		if !isTLS {
+			// Unreachable: mbaps config validation requires mTLS. A
+			// non-TLS connection gets the NULL role (deny all).
+			g.log.Warnf("gateway %s: [conn %d] %s: mbaps on non-TLS connection",
+				g.dev.Name, connID, remote)
+		} else {
+			_ = conn.SetDeadline(deadlineFromNow(handshakeTimeout))
+			if err := tc.Handshake(); err != nil {
+				g.log.Debugf("gateway %s: [conn %d] %s: closing: handshake: %v",
+					g.dev.Name, connID, remote, err)
+				return
+			}
+			_ = conn.SetDeadline(time.Time{})
+			if certs := tc.ConnectionState().PeerCertificates; len(certs) > 0 {
+				role, ok := mbapsRole(certs[0])
+				mbapsRights = mbapsRightsFor(g.mbaps, role, ok)
+				if ok {
+					g.log.Debugf("gateway %s: [conn %d] %s: mbaps role %q",
+						g.dev.Name, connID, remote, role)
+				} else {
+					g.log.Infof("gateway %s: [conn %d] %s: mbaps NULL role (no role extension)",
+						g.dev.Name, connID, remote)
+				}
+			}
+		}
+	}
+
 	for {
 		// B6: reap idle clients. Only the read (waiting for the next
 		// request) is idle-bounded; an in-flight exchange has its own
@@ -186,7 +241,7 @@ func (g *gateway) handleClient(conn net.Conn) {
 			return
 		}
 
-		resp := g.serve(conn, req, connID)
+		resp := g.serve(conn, req, connID, mbapsRights)
 		if err := writeADU(conn, resp); err != nil {
 			g.log.Debugf("gateway %s: [conn %d] %s: write failed: %v",
 				g.dev.Name, connID, remote, err)
@@ -197,8 +252,9 @@ func (g *gateway) handleClient(conn net.Conn) {
 
 // serve processes one request and returns the response to send back to
 // the client (never touches conn). connID is the B9 connection ID for
-// log correlation.
-func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64) mbtcp.ADU {
+// log correlation; mbapsRights is the connection role's allowed function
+// code set (B12; nil = deny every device request, NULL role).
+func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights map[uint8]bool) mbtcp.ADU {
 	clientUnit := req.Header.UnitID
 
 	// Health endpoint: requests addressed to the virtual health unit-ID
@@ -208,6 +264,19 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64) mbtcp.ADU {
 		g.log.Debugf("gateway %s: [conn %d] %s: serving health unit %d",
 			g.dev.Name, connID, conn.RemoteAddr(), g.healthUnitID)
 		return g.serveHealth(req)
+	}
+
+	// mbaps role authorization (B12): every request is checked against
+	// the connection role's function-code rights (spec: AuthZ occurs on
+	// every request; rejection = exception 0x01). A NULL role or a role
+	// without an entry has no rights. The device never sees a denied
+	// request.
+	if g.mbaps != nil && !mbapsRights[req.FunctionCode()] {
+		g.log.Infof("gateway %s: [conn %d] %s: mbaps denied FC %d (not authorized)",
+			g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode())
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionAuthZ)
+		g.health.incPolicy()
+		return g.exception(req, clientUnit, mbtcp.ExceptionIllegalFunction)
 	}
 
 	// Read-only policy: reject writes locally; the device never sees them.
@@ -344,12 +413,16 @@ func deviceTLSConfigFor(d config.Device) (*tls.Config, error) {
 // writeTimeout bounds a front-leg response write.
 const writeTimeout = 10 * time.Second
 
+// handshakeTimeout bounds the eager mTLS handshake in mbaps mode (B12).
+const handshakeTimeout = 10 * time.Second
+
 // Request outcome labels for the metrics hook.
 const (
 	outcomeForwarded       = "forwarded"
 	outcomeExceptionDevice = "exception_device" // upstream dial/timeout/read/write error
 	outcomeExceptionPolicy = "exception_policy" // read-only blocked write
 	outcomeExceptionRate   = "exception_rate"   // rate limiter rejection
+	outcomeExceptionAuthZ  = "exception_authz"  // mbaps role denial (B12)
 )
 
 // metricsOrNop normalizes a nil metrics hook to a concurrency-safe no-op.

@@ -190,6 +190,11 @@ func (f *fakeDevice) respond(hdr []byte, pdu []byte) []byte {
 		}
 		body := []byte{fc, 2, 0xCA, 0xFE}
 		return frame(hdr, body)
+	case 6: // write single register: per spec the response echoes the request PDU
+		if len(pdu) < 5 {
+			return nil
+		}
+		return frame(hdr, pdu)
 	default:
 		return exception(hdr, pdu, 0x01) // illegal function
 	}

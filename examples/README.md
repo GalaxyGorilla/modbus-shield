@@ -10,5 +10,6 @@ Copy-paste deployment walkthroughs for every modbus-shield shape.
 | [health.md](health.md) | Health via Modbus — monitor the box itself from plant SCADA via a virtual unit-ID (no extra port or tooling) |
 | [tls.md](tls.md) | TLS front leg — encrypted, optionally mTLS-authenticated client-facing side |
 | [two-proxy.md](two-proxy.md) | Two-proxy secured line — two boxes, TLS/mTLS across the untrusted link between them |
+| [mbaps.md](mbaps.md) | mbaps role authorization — per-role function-code rights from certificate roles (mTLS mandatory) |
 
 Planned (see [../BACKLOG.md](../BACKLOG.md)): transparent bump-in-the-wire.

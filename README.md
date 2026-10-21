@@ -41,7 +41,9 @@ modbus-shield is the box you put in front of them (retrofitting):
   defend the device from polling storms (Victron + Home Assistant + an
   EV charger polling one inverter is the canonical accident).
 - **Access control** — client IP allow-lists and a read-only mode
-  ("anyone may read the temperatures, nobody may write setpoints").
+  ("anyone may read the temperatures, nobody may write setpoints"), or
+  full per-role function-code rights via certificate roles (mbaps mode,
+  [examples/mbaps.md](examples/mbaps.md)).
 - **Deploy by paste** — two flags, done (see [examples/](examples/)).
 
 The v1 essence: a **dumb-but-strict forwarder** — same data in and out,
@@ -81,6 +83,7 @@ It is intentionally opinionated about deployment and operations.
 | [TLS front leg](examples/tls.md) (B1) | `[TLS clients] ⇄ TLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Clients on an untrusted segment; encrypted, optionally cert-authenticated (mTLS) front door |
 | [Two-proxy secured line](examples/two-proxy.md) (B2) | `[N clients] ⇄ plain ⇄ box ⇄ TLS/mTLS ⇄ box ⇄ plain ⇄ [device]` | Clients and device in different segments/sites; the untrusted link between the boxes carries only TLS |
 | [Health via Modbus](examples/health.md) (B4) | `[SCADA] ⇄ modbus-shield ⇄ [device]` (health on a virtual unit-ID) | Plant SCADA monitors the box itself with the Modbus tooling it already has — no extra port or tooling |
+| [mbaps role authorization](examples/mbaps.md) (B12) | `[role clients] ⇄ mTLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Per-client function-code rights from certificate roles (MODBUS/TCP Security profile's role-based AuthZ on the front leg) |
 
 Planned (see [BACKLOG.md](BACKLOG.md)): transparent bump-in-the-wire
 (B3). Security note: the Modbus Organization publishes a TLS security
@@ -89,10 +92,11 @@ spec](https://www.modbus.org/file/secure/modbussecurityprotocol.pdf),
 "mbaps": TLS on port 802, mandatory mutual X.509 auth, role-based
 authorization via certificate extensions). modbus-shield's TLS legs are
 wire-compatible with that profile (TLS 1.2 minimum, standard X.509, the
-mbap ADU untouched); full mbaps conformance — mandatory mutual auth and
-role-based authorization — is a deliberate future option, not the
-default, because retrofit clients and devices in the field don't speak
-it.
+mbap ADU untouched), and the **role-authorization subset** is
+implemented as the optional mbaps mode (B12) — mTLS plus per-role
+function-code rights from the Modbus role certificate extension. Full
+port-802 mbaps conformance remains out of scope: retrofit clients and
+devices in the field don't speak it.
 
 ## Quick start
 
