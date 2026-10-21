@@ -43,13 +43,14 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 0 — scaffold complete. Repo initialized, MIT
-licensed, build/vet clean, AGENTS.md + BACKLOG.md established.**
+**Current state: milestone 1 — `internal/mbtcp` complete. Single MBAP
+parser (strict framing, validate-before-allocate), unit tests + fuzz target
+(3.9M execs clean), build/vet/staticcheck/race green.**
 
 | Milestone | Status |
 |---|---|
 | Scaffold: dirs, go.mod, .gitignore, Makefile, AGENTS.md, BACKLOG.md | done |
-| `internal/mbtcp`: MBAP header build/parse (single parser, fuzz-ready), ADU cap, unit-ID types | pending |
+| `internal/mbtcp`: MBAP header build/parse (single parser, fuzz-ready), ADU cap, unit-ID types | done |
 | `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | pending |
 | Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | pending |
 | Multiplexing + fairness + backpressure (goroutine-leak regression test) | pending |
@@ -73,7 +74,7 @@ licensed, build/vet clean, AGENTS.md + BACKLOG.md established.**
 
 ```
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
-internal/mbtcp/            MBAP header build/parse helpers (single parser, fuzz-ready)
+internal/mbtcp/            MBAP header build/parse (mbtcp.go, fuzz_test.go + unit tests)
 internal/config/           YAML config + flag overrides, multi-device, ACL/policy
 internal/proxy/            gateway wiring: listener, client loops, upstream pool
 internal/acl/              client IP allow/deny + function-code policy (read-only)
@@ -155,6 +156,17 @@ or set `-timeout` on `go test` (network tests would hang without one).
   0x06 Server Device Busy, 0x0A Gateway Path Unavailable, 0x0B Gateway
   Target Device Failed To Respond (0x0A/0x0B are the natural codes for
   proxy-generated upstream errors).
+- **`internal/mbtcp` API contract**: parse entry points are `ParseADU(buf)`
+  (strict: exactly one frame, no truncation/trailing) and `ReadADU(r)`
+  (streaming: validates the header before reading the body, returns bare
+  `io.EOF` on clean close at a frame boundary, wraps `io.ErrUnexpectedEOF`
+  for truncated frames). All rejections are package sentinels
+  (`ErrShortFrame`, `ErrTruncated`, `ErrTrailingBytes`, `ErrProtocolID`,
+  `ErrLengthTooSmall`, `ErrLengthTooLarge`) — the fuzz target enforces
+  this. `ADU.PDU` never contains the unit ID (`Header.UnitID` holds it) so
+  unit-ID remapping can rewrite both independently. Build via `NewADU`/
+  `AppendTo` (buffer-reusing). Proxy-generated exceptions use
+  `ExceptionPDU(fc, code)` (FC|0x80 + code).
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,
