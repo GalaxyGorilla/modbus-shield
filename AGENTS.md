@@ -145,6 +145,10 @@ binaries under 1.27.3; the amd64 binary ran `version`. `staticcheck
 TestGatewayRateLimitBeforeCache):** the rate limiter runs BEFORE the
 cache lookup — a cache hit avoids device traffic but still consumes a
 rate token and is rejected with 0x06 when the limit is exhausted.
+All cache-ordering claims (config.go field comment, cache.go package
+doc, BACKLOG.md B8 entry, README bullet) were re-audited and now state
+this consistently; the B3 spike doc's "if we build it" / "decision
+required" sections are explicitly framed as historical notes.
 
 ```bash
 go build ./...
