@@ -76,8 +76,9 @@ It is intentionally opinionated about deployment and operations.
 | Shape | Topology | Use when |
 |---|---|---|
 | [Gateway box](examples/gateway.md) (v1) | `[N clients] ⇄ modbus-shield ⇄ [legacy device]` | One box in front of the device; the retrofit use case |
+| [TLS front leg](examples/tls.md) (B1) | `[TLS clients] ⇄ TLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Clients on an untrusted segment; encrypted, optionally cert-authenticated (mTLS) front door |
 
-Planned (see [BACKLOG.md](BACKLOG.md)): TLS front leg (B1), two-proxy
+Planned (see [BACKLOG.md](BACKLOG.md)): two-proxy
 secured line (B2), transparent bump-in-the-wire (B3), health-via-Modbus
 virtual unit-ID (B4).
 

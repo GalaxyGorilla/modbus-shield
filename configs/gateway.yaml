@@ -25,6 +25,10 @@ devices:
                                  # clients keep their unit IDs, the device
                                  # always sees 17; responses are rewritten
                                  # back to the client's original unit ID.
+    # tls:                       # front-leg TLS termination (device side
+    #   cert: server.crt         # stays plain; see examples/tls.md)
+    #   key: server.key
+    #   client_ca: ca.crt        # uncomment for mTLS (required client certs)
 
   # Second device behind the same box, unrestricted reads/writes.
   - listen_addr: ":5021"
