@@ -196,6 +196,110 @@ func TestParseInvalidYAML(t *testing.T) {
 	}
 }
 
+func TestTLSConfigParsing(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "s.crt")
+	key := filepath.Join(dir, "s.key")
+	ca := filepath.Join(dir, "ca.crt")
+	for _, f := range []string{cert, key, ca} {
+		if err := os.WriteFile(f, []byte("placeholder"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+    tls:
+      cert: "` + cert + `"
+      key: "` + key + `"
+      client_ca: "` + ca + `"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasTLS() {
+		t.Fatal("HasTLS = false")
+	}
+	if d.TLS.Cert == "" || d.TLS.Key == "" || d.TLS.ClientCA == "" {
+		t.Errorf("tls block = %+v", d.TLS)
+	}
+	if !d.HasClientCA() {
+		t.Errorf("HasClientCA = false")
+	}
+}
+
+func TestTLSValidateErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		tls  string
+		want string
+	}{
+		{"key without cert", `
+    tls:
+      key: "/tmp/server.key"
+`, "cert and key must be set together"},
+		{"cert without key", `
+    tls:
+      cert: "/tmp/server.crt"
+`, "cert and key must be set together"},
+		{"client_ca without cert", `
+    tls:
+      client_ca: "/tmp/ca.crt"
+`, "client_ca requires cert and key"},
+		{"missing cert file", `
+    tls:
+      cert: "/nonexistent/server.crt"
+      key: "/tmp/server.key"
+`, "no such file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := `
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.0.0.1:502"
+` + tc.tls
+			_, err := Parse([]byte(yaml))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.want)
+			}
+			if !contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestTLSValidateValidFiles(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "s.crt")
+	key := filepath.Join(dir, "s.key")
+	ca := filepath.Join(dir, "ca.crt")
+	for _, f := range []string{cert, key, ca} {
+		if err := os.WriteFile(f, []byte("placeholder"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := writeTemp(t, `
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.0.0.1:502"
+    tls:
+      cert: "`+cert+`"
+      key: "`+key+`"
+      client_ca: "`+ca+`"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load with readable files: %v", err)
+	}
+	if !cfg.Devices[0].HasClientCA() {
+		t.Errorf("HasClientCA = false")
+	}
+}
+
 func TestLoadMissingFile(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 	if err == nil {

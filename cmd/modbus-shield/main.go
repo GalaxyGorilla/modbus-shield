@@ -88,6 +88,9 @@ type cliFlags struct {
 	ratePerSec   *int
 	timeoutMs    *int
 	deviceUnitID *string
+	tlsCert      *string
+	tlsKey       *string
+	tlsClientCA  *string
 	metricsAddr  *string
 	logLevel     *string
 	logFormat    *string
@@ -109,6 +112,9 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.ratePerSec = fs.Int("rate-per-sec", 0, "max accepted requests per second (0 = unlimited)")
 	c.timeoutMs = fs.Int("timeout-ms", 0, "per-request upstream deadline in ms (0 = default 5000)")
 	c.deviceUnitID = fs.String("device-unit-id", "", "unit ID sent upstream (serial-gateway remap; responses rewritten back)")
+	c.tlsCert = fs.String("tls-cert", "", "front-leg TLS server certificate (PEM; enables TLS termination)")
+	c.tlsKey = fs.String("tls-key", "", "front-leg TLS server key (PEM)")
+	c.tlsClientCA = fs.String("tls-client-ca", "", "client certificate CA (PEM; enables mTLS: clients must present a signed cert)")
 	c.metricsAddr = fs.String("metrics-addr", "", "Prometheus metrics listen address (e.g. 127.0.0.1:9202)")
 	c.logLevel = fs.String("log-level", "info", "log level: debug, info, warn, error")
 	c.logFormat = fs.String("log-format", "console", "log format: console or json")
@@ -142,6 +148,13 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 		}
 		id := uint8(u)
 		dev.DeviceUnitID = &id
+	}
+	if *c.tlsCert != "" || *c.tlsKey != "" || *c.tlsClientCA != "" {
+		dev.TLS = &config.TLSConfig{
+			Cert:     *c.tlsCert,
+			Key:      *c.tlsKey,
+			ClientCA: *c.tlsClientCA,
+		}
 	}
 	cfg := &config.Config{
 		Devices: []config.Device{dev},
@@ -449,12 +462,15 @@ Usage (flags, no config file — plug and play):
   modbus-shield gateway --listen <ip:port> --device <legacy-device:port> \
       [--read-only] [--allow <ip|cidr>]... [--max-clients <n>] \
       [--rate-per-sec <n>] [--timeout-ms <ms>] [--device-unit-id <id>] \
+      [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]] \
       [--metrics-addr <addr>] [--log-level <lvl>] [--log-format <fmt>]
 
 The gateway is a single box in front of the legacy device: N clients are
 multiplexed over ONE connection to the device (many legacy devices accept
 only one), writes can be blocked (--read-only), clients restricted
 (--allow) and the device shielded from polling storms (--rate-per-sec).
+With --tls-cert/--tls-key the front leg terminates TLS (add
+--tls-client-ca for mTLS); the device-side wire stays plain Modbus TCP.
 Plain Modbus TCP on both wires — the device notices nothing.
 
 Other commands:

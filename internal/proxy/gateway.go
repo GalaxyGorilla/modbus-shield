@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +35,9 @@ type gateway struct {
 	// rate_per_sec is 0 (unlimited).
 	lim *rateLimiter
 
+	// tlsCfg terminates TLS on the front leg when set (nil = plain TCP).
+	tlsCfg *tls.Config
+
 	// met is the observability hook; never nil (normalized to a no-op).
 	met Metrics
 }
@@ -41,6 +47,13 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 	if err != nil {
 		return nil, fmt.Errorf("device %s: %w", dev.Name, err)
 	}
+	var tlsCfg *tls.Config
+	if dev.HasTLS() {
+		tlsCfg, err = tlsConfigFor(dev)
+		if err != nil {
+			return nil, fmt.Errorf("device %s: %w", dev.Name, err)
+		}
+	}
 	return &gateway{
 		dev:        dev,
 		up:         newUpstream(dev.DeviceAddr, dev.Name, log, met),
@@ -48,15 +61,22 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		allow:      allow,
 		maxClients: int64(dev.MaxClients),
 		lim:        newRateLimiter(dev.RatePerSec),
+		tlsCfg:     tlsCfg,
 		met:        metricsOrNop(met),
 	}, nil
 }
 
 // Serve runs the accept loop on ln until it is closed. Client-side errors
 // never kill the loop: a misbehaving client costs its connection only.
+// When front-leg TLS is configured, ln is wrapped and the TLS handshake
+// happens lazily in the handler goroutine (never in the accept loop —
+// a hanging or slow handshake must not block new connections).
 func (g *gateway) Serve(ln net.Listener) error {
-	g.log.Infof("gateway %s: listening on %s -> %s (read_only=%v max_clients=%d)",
-		g.dev.Name, ln.Addr(), g.dev.DeviceAddr, g.dev.ReadOnly, g.maxClients)
+	if g.tlsCfg != nil {
+		ln = tls.NewListener(ln, g.tlsCfg)
+	}
+	g.log.Infof("gateway %s: listening on %s -> %s (read_only=%v max_clients=%d tls=%v)",
+		g.dev.Name, ln.Addr(), g.dev.DeviceAddr, g.dev.ReadOnly, g.maxClients, g.tlsCfg != nil)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -194,6 +214,34 @@ func remoteIP(conn net.Conn) net.IP {
 		return ta.IP
 	}
 	return nil
+}
+
+// tlsConfigFor builds the front-leg TLS termination config from a device
+// entry: TLS 1.2 minimum, and mTLS (required, CA-verified client certs)
+// when client_ca is configured.
+func tlsConfigFor(d config.Device) (*tls.Config, error) {
+	t := d.TLS
+	cert, err := tls.LoadX509KeyPair(t.Cert, t.Key)
+	if err != nil {
+		return nil, fmt.Errorf("load server cert/key: %w", err)
+	}
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	if t.ClientCA != "" {
+		pem, err := os.ReadFile(t.ClientCA)
+		if err != nil {
+			return nil, fmt.Errorf("read client CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("client CA %s: no valid certificates found", t.ClientCA)
+		}
+		cfg.ClientCAs = pool
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
 }
 
 // writeTimeout bounds a front-leg response write.

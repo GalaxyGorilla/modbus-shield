@@ -53,6 +53,21 @@ type Device struct {
 	// front leg, the device always sees this value; the gateway rewrites
 	// the client's original unit ID back into responses).
 	DeviceUnitID *uint8 `yaml:"device_unit_id"`
+
+	// TLS, when set, terminates TLS on the front-leg listener (the
+	// device-side wire stays plain Modbus TCP). With ClientCA set, client
+	// certificates signed by that CA are required (mTLS).
+	TLS *TLSConfig `yaml:"tls"`
+}
+
+// TLSConfig configures front-leg TLS termination for a device.
+type TLSConfig struct {
+	// Cert and Key are the server certificate/key pair (PEM files).
+	Cert string `yaml:"cert"`
+	Key  string `yaml:"key"`
+	// ClientCA, when set, is a PEM file of CA certificates; clients must
+	// present a certificate signed by one of them (mTLS).
+	ClientCA string `yaml:"client_ca"`
 }
 
 // LogConfig selects logging behavior.
@@ -168,6 +183,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("config: %s: allow[%d]: invalid IP or CIDR %q", label, j, cidr)
 			}
 		}
+		if err := d.TLS.Validate(); err != nil {
+			return fmt.Errorf("config: %s: %w", label, err)
+		}
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
@@ -198,6 +216,37 @@ func (d *Device) HasUnitRemap() bool { return d.DeviceUnitID != nil }
 // UpstreamUnitID returns the device-side unit ID override (call only when
 // HasUnitRemap() is true).
 func (d *Device) UpstreamUnitID() uint8 { return *d.DeviceUnitID }
+
+// HasTLS reports whether front-leg TLS termination is configured.
+func (d *Device) HasTLS() bool { return d.TLS != nil }
+
+// HasClientCA reports whether mTLS (required client certificates) is
+// configured for the front leg.
+func (d *Device) HasClientCA() bool { return d.HasTLS() && d.TLS.ClientCA != "" }
+
+// Validate checks a TLS configuration block: cert and key are
+// both-or-neither, client_ca requires cert/key, and all configured files
+// must be readable at validate time.
+func (t *TLSConfig) Validate() error {
+	if t == nil {
+		return nil
+	}
+	if (t.Cert == "") != (t.Key == "") {
+		return fmt.Errorf("tls: cert and key must be set together")
+	}
+	if t.ClientCA != "" && t.Cert == "" {
+		return fmt.Errorf("tls: client_ca requires cert and key")
+	}
+	for _, f := range []string{t.Cert, t.Key, t.ClientCA} {
+		if f == "" {
+			continue
+		}
+		if _, err := os.ReadFile(f); err != nil {
+			return fmt.Errorf("tls: %s: %w", f, err)
+		}
+	}
+	return nil
+}
 
 // validIPorCIDR accepts a bare IP or a CIDR range.
 func validIPorCIDR(s string) bool {

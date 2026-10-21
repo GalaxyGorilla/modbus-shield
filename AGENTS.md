@@ -43,14 +43,13 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: v1 feature-complete — all milestones done. Docs
-milestone landed: README (mission/why, decision guidance naming
-modbus-proxy/VPN alternatives, feature + metrics tables, appliance
-deployment), examples walkthroughs (gateway, multi-device,
-operations — the day-2 production guide), deploy/
-modbus-shield-gateway.service (hardened systemd unit), `make interop`
-target. Full suite green under `-race`; staticcheck + govulncheck
-clean; interop PASS rc=0.**
+**Current state: v1 feature-complete + B1 (TLS front leg). Per-device
+`tls:` config block (`cert`/`key`/`client_ca`) and
+`--tls-cert/--tls-key/--tls-client-ca` flags terminate TLS on the
+front leg (TLS 1.2 minimum, mTLS via client_ca). Device-side wire stays
+plain Modbus TCP. E2E tests: TLS reads, mTLS reject (no cert) + accept
+(with cert), plain-client resilience. Full suite green under `-race`;
+staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -64,6 +63,7 @@ clean; interop PASS rc=0.**
 | CLI: `validate` / `selftest` / flags mode / `version` | done (gateway/validate/selftest/genpsk/version) |
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | done (FuzzParseADU + FuzzReadADU, corpora committed; interop PASS rc=0) |
 | Docs: README (why/deployment shapes/decision guidance), examples, systemd units | done (README + examples: gateway/multi-device/operations + deploy unit + make interop) |
+| B1: TLS front leg (per-device `tls:` block + flags, mTLS) | done (config/proxy/CLI/tests; docs walkthrough pending) |
 
 ### Verification targets (from the plan)
 
@@ -276,6 +276,19 @@ or set `-timeout` on `go test` (network tests would hang without one).
   `errors.Is(err, net.ErrClosed)` (Stop() closed the listener = clean
   shutdown, not an error). Any other Accept error is fatal to Run. Without
   this, every SIGTERM logged an ERROR stack trace from main.
+- **TLS front-leg contract (B1)**: per-device `config.TLSConfig`
+  (`tls.cert`/`tls.key`/`tls.client_ca`) — Validate enforces
+  cert+key both-or-neither, client_ca requires cert/key, all files
+  readable at validate time. `tlsConfigFor` builds TLS 1.2 minimum +
+  `RequireAndVerifyClientCert` when client_ca set. `Serve` wraps the
+  listener with `tls.NewListener`; the handshake is **lazy** in the
+  handler goroutine (never in the accept loop — a hanging client must
+  not block accept). `tls.Conn.RemoteAddr()` delegates to the inner TCP
+  conn, so the IP allow-list and conn-cap keep working unchanged.
+  Plain client against TLS listener = lazy handshake error in
+  handleClient, listener never dies. mTLS test lesson: under TLS 1.3 the
+  client's Dial may return before the server's client-cert rejection
+  arrives — force the alert with a write+read before asserting failure.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,
