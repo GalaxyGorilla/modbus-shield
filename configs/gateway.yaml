@@ -29,6 +29,11 @@ devices:
     #   cert: server.crt         # stays plain; see examples/tls.md)
     #   key: server.key
     #   client_ca: ca.crt        # uncomment for mTLS (required client certs)
+    # device_tls:                # secure the UPSTREAM leg instead (two-proxy
+    #   ca_cert: ca.crt          # secured line; the far side is a second
+    #   server_name: farbox      # gateway with a tls: block; see
+    #   cert: front.crt          # examples/two-proxy.md)
+    #   key: front.key
 
   # Second device behind the same box, unrestricted reads/writes.
   - listen_addr: ":5021"

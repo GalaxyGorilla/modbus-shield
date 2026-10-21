@@ -65,7 +65,7 @@ Full suite green under `-race`; staticcheck + govulncheck clean.**
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | done (FuzzParseADU + FuzzReadADU, corpora committed; interop PASS rc=0) |
 | Docs: README (why/deployment shapes/decision guidance), examples, systemd units | done (README + examples: gateway/multi-device/operations + deploy unit + make interop) |
 | B1: TLS front leg (per-device `tls:` block + flags, mTLS) | done (config/proxy/CLI/tests + examples/tls.md) |
-| B2: two-proxy secured line (`device_tls:` upstream leg + flags) | done (config/proxy/CLI/tests; docs walkthrough pending) |
+| B2: two-proxy secured line (`device_tls:` upstream leg + flags) | done (config/proxy/CLI/tests + examples/two-proxy.md) |
 
 ### Verification targets (from the plan)
 
@@ -90,7 +90,7 @@ internal/observ/           zap logging + Prometheus metrics (observ.go + tests; 
 configs/                   example YAML templates
 scripts/                   interop-modbus.sh (real mbpoll), fakedevice.py, smoke scripts, SBOM entry point
 deploy/                    hardened systemd unit files
-examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md
+examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md, two-proxy.md
 ```
 
 (All directories populated as of v1 feature-complete; see individual

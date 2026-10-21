@@ -8,6 +8,6 @@ Copy-paste deployment walkthroughs for every modbus-shield shape.
 | [multi-device.md](multi-device.md) | Multi-device box — one instance, several listeners and devices with per-device policies |
 | [operations.md](operations.md) | Production operations — systemd install, commissioning, monitoring, config changes, troubleshooting, upgrades |
 | [tls.md](tls.md) | TLS front leg — encrypted, optionally mTLS-authenticated client-facing side |
+| [two-proxy.md](two-proxy.md) | Two-proxy secured line — two boxes, TLS/mTLS across the untrusted link between them |
 
-Planned (see [../BACKLOG.md](../BACKLOG.md)): TLS front leg, two-proxy
-secured line, transparent bump-in-the-wire.
+Planned (see [../BACKLOG.md](../BACKLOG.md)): transparent bump-in-the-wire.
