@@ -78,6 +78,11 @@ connection whose upstream address comes from conntrack instead of config.
   inherent property of an inline splice (a blocking inline firewall
   would fail-closed, at the cost of taking the device down with the
   box). Monitor the rule's presence; alert if it disappears.
+  **Because of this, transparent mode must never be the only security
+  boundary in a high-assurance installation** — pair it with a
+  fail-closed control (network segmentation, a blocking firewall behind
+  the box) or use the reverse-proxy gateway shape, where the proxy is
+  the only path by construction.
 - If the box routes but modbus-shield dies: the REDIRECT has no
   listener → connections to port 502 through the box are refused (the
   device is unreachable through the box until the process returns).

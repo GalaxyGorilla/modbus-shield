@@ -189,8 +189,10 @@ with `validate --json`, and offer a "test connection" button backed by
   Modbus TCP and clients notice nothing (B7).
 - **Opt-in read cache** — `read_cache_ttl_ms` serves repeated FC 1-4
   reads from memory, shielding very slow devices from heavy polling;
-  cached responses carry fresh transaction IDs, skip the rate limiter
-  and generate no device traffic; writes and exceptions are never
+  cached responses carry fresh transaction IDs. Cache hits avoid device
+  traffic but still consume a rate token (the rate limiter runs before
+  the lookup) and can be rejected with 0x06 when the limit is exhausted;
+  writes and exceptions are never
   cached; 0 = fully transparent (B8).
 - **Access control** — per-listener IP allow-lists; read-only mode
   rejects write function codes (5, 6, 15, 16, 21, 22, 23) with a clean

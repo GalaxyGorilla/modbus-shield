@@ -1,7 +1,9 @@
 # B3 design spike: transparent bump-in-the-wire mode
 
-Status: spike complete — implementation NOT started. Read this before
-touching B3. Decision required (see §5).
+Status: DONE — implemented and shipped (commit 7bfa663). This document
+records the design spike that preceded the implementation; see
+examples/transparent.md for the operator walkthrough and
+internal/proxy/origdst_linux.go for the code.
 
 ## 1. Goal
 

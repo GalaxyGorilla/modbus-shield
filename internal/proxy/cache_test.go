@@ -189,3 +189,52 @@ func TestGatewayReadCacheWriteNotCached(t *testing.T) {
 		t.Errorf("device served = %d, want 2 (writes are never cached)", got)
 	}
 }
+
+// TestGatewayRateLimitBeforeCache pins the serve() ordering: the rate
+// limiter runs BEFORE the cache lookup, so a cache hit still consumes a
+// rate token and is rejected with 0x06 when the limit is exhausted.
+// (A hit saves the DEVICE, not the rate budget.) The contract text in
+// gateway.go, README.md and configs/gateway.yaml documents this — this
+// test keeps code and docs in sync.
+func TestGatewayRateLimitBeforeCache(t *testing.T) {
+	dev := newFakeDevice(t)
+	front := startGateway(t, config.Device{
+		DeviceAddr:     dev.Addr(),
+		RatePerSec:     2,
+		ReadCacheTTLMs: 60000, // any hit would mask the limiter if it ran first
+	})
+
+	conn := dial(t, front)
+	defer conn.Close()
+
+	adu, _ := mbtcp.NewADU(0x1234, 1, []byte{3, 0x01, 0x00, 0x00, 0x01})
+	busy := 0
+	for i := 0; i < 10; i++ {
+		if _, err := conn.Write(adu.Frame()); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := mbtcp.ReadADU(conn)
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		if resp.IsException() {
+			code, ok := resp.ExceptionCode()
+			if !ok || code != mbtcp.ExceptionServerBusy {
+				t.Fatalf("read %d: exception %d (ok=%v), want 0x06", i, code, ok)
+			}
+			busy++
+		}
+	}
+	// rate_per_sec=2: burst 2 plus refill during 10 sequential requests —
+	// a few pass, the rest MUST be rejected by the limiter even though
+	// every response is identical and cacheable. If the cache ran before
+	// the limiter, only the first request would ever reach it and the
+	// remaining 9 would be cache hits (busy stays 0).
+	if busy == 0 {
+		t.Fatal("no busy responses; cache appears to run before the rate limiter")
+	}
+	if got := int(dev.Served()); got > 3 {
+		t.Fatalf("device served %d, want <= ~3 (burst + refill)", got)
+	}
+}

@@ -310,8 +310,11 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 	}
 
 	// Read cache (B8): repeated read requests within the TTL are answered
-	// from memory — no device traffic and no rate-token consumption on a
-	// hit. The cache key uses the CLIENT's unit ID and request PDU
+	// from memory — no device traffic on a hit. NOTE: the rate limiter
+	// runs BEFORE this lookup, so a hit still consumes a rate token (a
+	// cache hit saves the device, not the rate budget; a client above its
+	// rate limit is rejected even when the answer is cached). The cache
+	// key uses the CLIENT's unit ID and request PDU
 	// (pre-remap), so remapped devices are cached per-client-unit.
 	if g.cache != nil && isReadFC(req.FunctionCode()) {
 		if pdu := g.cache.lookup(clientUnit, req.PDU); pdu != nil {

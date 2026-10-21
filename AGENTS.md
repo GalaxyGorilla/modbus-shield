@@ -121,7 +121,22 @@ milestone sections above for file inventories.)
 ## 5. Build / Test
 
 Go at `/usr/local/go/bin/go` (on PATH via `/etc/profile.d/go.sh`);
-go.mod declares minimum **1.24.0** (CI-free project — tests run manually).
+go.mod declares minimum **1.26.0** (CI-free project — tests run manually).
+
+**Latest local verification (2026-10-21):** `go build ./...`, `go vet
+./...`, and `go test ./... -race -timeout 180s` passed under Go 1.27.3
+(pinned via the `toolchain` directive in go.mod — GO-2026-6809 in the
+Go 1.27.2 `crypto/x509` stdlib made 1.27.2 unusable for TLS-enabled
+releases; with 1.27.3 `govulncheck ./...` reports no vulnerabilities).
+`make release-all` produced valid static Linux amd64/arm64/armv7
+binaries under 1.27.3; the amd64 binary ran `version`. `staticcheck
+./...` passed. The optional `make interop` suite was not run because
+`mbpoll` is absent (the script exits 77 by design).
+
+**Read-cache + rate-limiter ordering (pinned by
+TestGatewayRateLimitBeforeCache):** the rate limiter runs BEFORE the
+cache lookup — a cache hit avoids device traffic but still consumes a
+rate token and is rejected with 0x06 when the limit is exhausted.
 
 ```bash
 go build ./...
