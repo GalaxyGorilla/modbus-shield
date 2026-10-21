@@ -29,8 +29,10 @@ All items are done. The last one (B3) landed after a design spike
   shielding very slow devices from heavy polling. Cache key = client
   unit ID + request PDU (per-client, remap-independent); only
   non-exception read responses are stored; cached responses carry the
-  client's fresh transaction ID, skip the rate limiter and generate NO
-  device traffic; writes and exceptions are never cached; mutex-guarded
+  client's fresh transaction ID and generate NO device traffic (but the
+  rate limiter still runs first — hits consume rate tokens, pinned by
+  TestGatewayRateLimitBeforeCache); writes and exceptions are never
+  cached; mutex-guarded
   map with lazy TTL expiry. Metric outcome `cache_hit` + health register
   18 (cache hits, 16-bit wrap; register map version bumped to 2). 0 =
   disabled (fully transparent semantics). Verified by unit tests

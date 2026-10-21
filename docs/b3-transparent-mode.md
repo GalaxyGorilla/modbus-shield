@@ -86,7 +86,8 @@ complexity (clang/llvm for CO:RE), and Modbus traffic volumes (KB/s) give
 eBPF's performance advantage nothing to do. Revisit only if a customer
 deployment demands wire-rate on 10G+.
 
-## 4. Implementation sketch (if we build it)
+## 4. Implementation sketch (historical — as sketched before coding; the
+## shipped implementation differs in details, see examples/transparent.md)
 
 1. `internal/config`: per-device `transparent: true` (mutually exclusive
    with `device_addr`; `rtu_over_tcp`/`device_tls` keep working per
@@ -107,7 +108,8 @@ deployment demands wire-rate on 10G+.
    traffic flows unproxied straight to the device — fail-OPEN by design,
    called out loudly; ACLs/shielding are bypassed in that state).
 
-## 5. Decision required before coding
+## 5. Decision required before coding (historical — resolved: built as A1,
+## commit 7bfa663; the testability note below remains true)
 
 The blocker is **testability**: no root on the dev box means the netfilter
 mechanism itself ships untested here (unit-tested with mocks only; manual

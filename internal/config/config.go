@@ -116,8 +116,10 @@ type Device struct {
 	// ReadCacheTTLMs, when set, enables the opt-in read cache (B8):
 	// successful FC 1-4 responses are served from memory for this long
 	// (keyed by unit ID + request PDU), shielding very slow devices from
-	// heavy polling. Cached responses skip the rate limiter and generate
-	// NO device traffic — the device is only contacted on a miss. Writes,
+	// heavy polling. A cache hit generates NO device traffic (the device
+	// is only contacted on a miss), but the rate limiter runs BEFORE the
+	// cache lookup — a hit still consumes a rate token and is rejected
+	// with 0x06 when the limit is exhausted. Writes,
 	// exceptions and health reads are never cached. 0 = disabled (fully
 	// transparent semantics). NOTE: a cache makes responses stale by up
 	// to the TTL; only enable it for data that changes slowly.

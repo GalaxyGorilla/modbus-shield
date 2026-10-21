@@ -12,9 +12,11 @@ import (
 // The cache key is the upstream unit ID plus the full request PDU (so
 // register addresses and quantities are inherently part of the key).
 // Only non-exception responses to read function codes are stored, so
-// writes, exceptions and health reads never hit the cache. Cached
-// responses skip the rate limiter and the device entirely — no device
-// traffic is generated for a hit.
+// writes, exceptions and health reads never hit the cache. A cache hit
+// avoids device traffic entirely (no device connection is made), but the
+// rate limiter still runs BEFORE the lookup (pinned by
+// TestGatewayRateLimitBeforeCache) — a hit saves the device, not the
+// rate budget.
 //
 // Concurrency: the map is guarded by a mutex; the cache is best-effort
 // and safe under concurrent access. Entry values are response PDUs
