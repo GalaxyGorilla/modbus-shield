@@ -43,14 +43,16 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 4 — multiplexing proven. `internal/proxy`:
+**Current state: milestone 4+ — shielding complete. `internal/proxy`:
 front-leg listener, per-client lock-step loop, upstream connection with
 reconnect/backoff, stale-response discard, unit-ID remap, IP allow-list
-gate, read-only policy, race-free connection cap. Concurrency e2e under
-`-race` (11 tests): 8 clients × 25 reads multiplex onto exactly ONE
-upstream connection (LockStep device), fairness under 100ms/request
-device, idle/stalled client isolation, cap enforcement (2/2 split),
-device-outage re-dial recovery, goroutine-leak regression.**
+gate, read-only policy, race-free connection cap, token-bucket rate
+limiter (`rate_per_sec`, rejected requests get exception 0x06 and never
+reach the device). Concurrency e2e under `-race` (15 tests): 8 clients ×
+25 reads multiplex onto exactly ONE upstream connection (LockStep
+device), fairness under 100ms/request device, idle/stalled client
+isolation, cap enforcement (2/2 split), device-outage re-dial recovery,
+goroutine-leak regression, rate-limit burst/refill/e2e.**
 
 | Milestone | Status |
 |---|---|
@@ -59,7 +61,7 @@ device-outage re-dial recovery, goroutine-leak regression.**
 | `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | YAML done (flags mode lands with the CLI milestone) |
 | Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | done |
 | Multiplexing + fairness + backpressure (goroutine-leak regression test) | done (rate limit still open, tracked with ACL row) |
-| ACLs + read-only policy + shielding limits (conn cap, rate limit) | conn cap + read-only done; rate limit pending |
+| ACLs + read-only policy + shielding limits (conn cap, rate limit) | done (all: read-only, conn cap, rate limit) |
 | Observability (Prometheus + zap) | pending |
 | CLI: `validate` / `selftest` / flags mode / `version` | pending |
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | pending |
@@ -82,7 +84,7 @@ device-outage re-dial recovery, goroutine-leak regression.**
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP header build/parse (mbtcp.go, fuzz_test.go + unit tests)
 internal/config/           YAML config (config.go + tests); flags overrides land with CLI
-internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go + fakedevice e2e
+internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics
 configs/                   example YAML templates
@@ -211,6 +213,16 @@ or set `-timeout` on `go test` (network tests would hang without one).
   dials then slips past `max_clients` before handlers start (real race,
   caught by TestGatewayConnCapFriendly burst test). ACL check decrements
   on rejection too.
+- **`internal/proxy` rate limiter contract** (`ratelimit.go`): token
+  bucket, capacity = 1 second's worth of `rate_per_sec` tokens, continuous
+  refill, burst absorbed without rejection. `newRateLimiter(0|negative)`
+  returns nil = unlimited; ALL checks are nil-guarded (same pattern as
+  the nil allow-list). `last` initializes lazily on first Allow() so test
+  clock injection (`nowFn`) is exact — never read the wall clock at
+  construction. Order in `serve()`: read-only check first (blocked writes
+  never consume rate tokens), then rate limit, then remap + exchange.
+  Rate-rejected requests get exception 0x06 Server Device Busy (spec:
+  "client should retry later") and the device never sees them.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,

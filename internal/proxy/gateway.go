@@ -26,6 +26,10 @@ type gateway struct {
 	// maxClients caps concurrent front-leg connections (shielding).
 	maxClients int64
 	clients    atomic.Int64
+
+	// lim enforces rate_per_sec on the front leg (shielding); nil when
+	// rate_per_sec is 0 (unlimited).
+	lim *rateLimiter
 }
 
 func newGateway(dev config.Device, log Logger) (*gateway, error) {
@@ -39,6 +43,7 @@ func newGateway(dev config.Device, log Logger) (*gateway, error) {
 		log:        log,
 		allow:      allow,
 		maxClients: int64(dev.MaxClients),
+		lim:        newRateLimiter(dev.RatePerSec),
 	}, nil
 }
 
@@ -121,6 +126,14 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 		g.log.Infof("gateway %s: %s: blocked write FC %d (read-only)",
 			g.dev.Name, conn.RemoteAddr(), req.FunctionCode())
 		return g.exception(req, clientUnit, mbtcp.ExceptionIllegalFunction)
+	}
+
+	// Rate limiting: shield the device from polling storms. Rejected
+	// requests get Server Device Busy and the device never sees them.
+	if g.lim != nil && !g.lim.Allow() {
+		g.log.Warnf("gateway %s: %s: rate limit (%d/s) exceeded, FC %d rejected",
+			g.dev.Name, conn.RemoteAddr(), g.dev.RatePerSec, req.FunctionCode())
+		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
 	}
 
 	// Unit-ID remap: the device always sees the configured unit ID.

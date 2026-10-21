@@ -230,6 +230,7 @@ func (a ADU) ExceptionCode() (code uint8, ok bool) {
 const (
 	ExceptionIllegalFunction   uint8 = 0x01 // Illegal Function
 	ExceptionIllegalDataAddr   uint8 = 0x02 // Illegal Data Address
+	ExceptionServerBusy        uint8 = 0x06 // Server Device Busy (retry later)
 	ExceptionGatewayPathUnavbl uint8 = 0x0A // Gateway Path Unavailable
 	ExceptionGatewayTargetFail uint8 = 0x0B // Gateway Target Device Failed To Respond
 )
