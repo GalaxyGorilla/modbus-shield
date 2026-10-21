@@ -45,14 +45,15 @@ serial ports.
 
 **Current state: v1 feature-complete + B1 (TLS front leg) + B2 (two-proxy
 secured line) + B4 (health-via-Modbus) + B5 (inter-request pacing) + B6
-(idle client timeout) + B9 (connection-ID logging). Per-device `tls:`
-block terminates TLS on the front leg; `device_tls:` block
-(`ca_cert`/`server_name`/`cert`/`key`) secures the upstream leg;
-`health_unit_id` exposes 18 proxy health registers on a virtual unit-ID;
-`request_delay_ms` paces picky devices; `idle_timeout_ms` reaps dead
-clients; every client and device log line carries a per-gateway
-`[conn N]` ID. Full suite green under `-race`; staticcheck +
-govulncheck clean.**
+(idle client timeout) + B9 (connection-ID logging) + B10 (multiple
+listeners per device). Per-device `tls:` block terminates TLS on the
+front leg; `device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`)
+secures the upstream leg; `health_unit_id` exposes 18 proxy health
+registers on a virtual unit-ID; `request_delay_ms` paces picky devices;
+`idle_timeout_ms` reaps dead clients; every client and device log line
+carries a per-gateway `[conn N]` ID; `extra_listen` adds front doors
+that share one upstream connection and all shielding limits. Full suite
+green under `-race`; staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -72,6 +73,7 @@ govulncheck clean.**
 | B5: inter-request pacing (`request_delay_ms`) | done (upstream timer + tests) |
 | B6: idle client timeout (`idle_timeout_ms`) | done (handleClient read deadline + tests) |
 | B9: connection-ID logging (`[conn N]` in client + device log lines) | done (connSeq counter, exchange takes connID, smoke-connid.sh) |
+| B10: multiple listeners per device (`extra_listen` + `--extra-listen`) | done (config/proxy/CLI/tests; one upstream shared by all doors) |
 
 ### Verification targets (from the plan)
 
@@ -211,6 +213,19 @@ or set `-timeout` on `go test` (network tests would hang without one).
   first bind error aborts) -> `Stop()`; `bound` channel signals when
   listeners are up (tests wait on it before dialing). `Logger` is a
   minimal zap-agnostic interface injected by main.
+- **Multiple listeners per device (B10)**: `extra_listen` (YAML list) +
+  repeatable `--extra-listen` flag add front doors to the SAME gateway.
+  `Runner.Run` binds `listen_addr` + every `extra_listen` entry and
+  serves each listener with the same `gateway.Serve` — all doors share
+  ONE upstream connection, one conn cap, one allow-list, one rate
+  limiter, one TLS config (shielding stays per-device, which is the
+  point: the fragile device sees one connection no matter how many
+  doors). Validate enforces host:port syntax, no duplicate of the
+  device's own listen_addr, and no collision with other devices'
+  addresses (shared `seen` map). `r.lns` is in bind order: for gateway
+  i, its listeners occupy a contiguous slice of length
+  `len(1 + ExtraListen)` — tests use `startGatewayExtra` returning
+  addresses in bind order.
 - **`internal/acl` contract**: `IsWrite(fc)` classifies write FCs
   (5, 6, 15, 16, 21, 22, 23; reads + diagnostics + FIFO 24 allowed).
   `NewList(entries)` returns nil for empty (no restriction); `Allowed(ip)`

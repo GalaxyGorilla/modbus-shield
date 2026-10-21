@@ -23,6 +23,13 @@ type Device struct {
 	// e.g. ":5020" or "0.0.0.0:502".
 	ListenAddr string `yaml:"listen_addr"`
 
+	// ExtraListen are optional additional front-leg bind addresses for
+	// the same device (B10): every address is served by the same gateway,
+	// so all listeners share ONE upstream device connection, one
+	// connection cap, one allow-list, one rate limit and one TLS config.
+	// Shielding stays per-device no matter how many doors clients use.
+	ExtraListen []string `yaml:"extra_listen"`
+
 	// DeviceAddr is the upstream legacy device, e.g. "10.0.0.42:502".
 	DeviceAddr string `yaml:"device_addr"`
 
@@ -206,6 +213,21 @@ func (c *Config) Validate() error {
 		}
 		if _, _, err := net.SplitHostPort(d.ListenAddr); err != nil {
 			return fmt.Errorf("config: %s: bad listen_addr %q: %w", label, d.ListenAddr, err)
+		}
+		// B10: extra front-leg listeners — same uniqueness + syntax rules
+		// as the primary listen_addr, and no collisions with other
+		// devices' addresses either.
+		for j, extra := range d.ExtraListen {
+			if _, _, err := net.SplitHostPort(extra); err != nil {
+				return fmt.Errorf("config: %s: bad extra_listen[%d] %q: %w", label, j, extra, err)
+			}
+			if prev, dup := seen[extra]; dup {
+				return fmt.Errorf("config: %s: extra_listen[%d] %q already used by %s", label, j, extra, prev)
+			}
+			if extra == d.ListenAddr {
+				return fmt.Errorf("config: %s: extra_listen[%d] %q duplicates listen_addr", label, j, extra)
+			}
+			seen[extra] = label
 		}
 		if _, _, err := net.SplitHostPort(d.DeviceAddr); err != nil {
 			return fmt.Errorf("config: %s: bad device_addr %q: %w", label, d.DeviceAddr, err)

@@ -81,6 +81,7 @@ type cliFlags struct {
 
 	configPath   *string
 	listen       *string
+	extraListen  *[]string
 	device       *string
 	readOnly     *bool
 	allow        *[]string
@@ -112,6 +113,7 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.fs = fs
 	c.configPath = fs.String("config", "", "path to YAML config file (either --config or direct flags)")
 	c.listen = fs.String("listen", "", "front-leg listener address clients connect to, ip:port")
+	c.extraListen = fs.StringArray("extra-listen", nil, "additional front-leg listener for the same device, ip:port (repeatable; shares one upstream connection and all limits with --listen)")
 	c.device = fs.String("device", "", "upstream legacy device address, ip:port")
 	c.readOnly = fs.Bool("read-only", false, "block all write function codes (device never sees writes)")
 	c.allow = fs.StringArray("allow", nil, "client allow-list entry, IP or CIDR (repeatable; empty = any client)")
@@ -148,7 +150,9 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 	}
 	dev := config.Device{
 		ListenAddr: *c.listen,
-		DeviceAddr: *c.device,
+
+		ExtraListen: *c.extraListen,
+		DeviceAddr:  *c.device,
 		ReadOnly:   *c.readOnly,
 		Allow:      *c.allow,
 		MaxClients: *c.maxClients,
@@ -496,6 +500,7 @@ Usage (flags, no config file — plug and play):
       [--read-only] [--allow <ip|cidr>]... [--max-clients <n>] \
       [--rate-per-sec <n>] [--timeout-ms <ms>] [--device-unit-id <id>] \
       [--request-delay-ms <ms>] [--idle-timeout-ms <ms>] \
+      [--extra-listen <ip:port>]... \
       [--health-unit-id <id>] \
       [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]] \
       [--device-tls-ca <pem> [--device-tls-server-name <name>] \
@@ -506,6 +511,9 @@ The gateway is a single box in front of the legacy device: N clients are
 multiplexed over ONE connection to the device (many legacy devices accept
 only one), writes can be blocked (--read-only), clients restricted
 (--allow) and the device shielded from polling storms (--rate-per-sec).
+Extra front doors (--extra-listen) share the same single upstream
+connection, connection cap, allow-list and TLS config with --listen —
+shielding stays per-device no matter how many addresses clients use.
 Pacing (--request-delay-ms) keeps a minimum gap between requests toward
 picky legacy devices; --idle-timeout-ms reaps front connections idle
 longer than the TTL (frees connection-cap slots from dead pollers).

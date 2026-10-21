@@ -21,6 +21,11 @@ devices:
     max_clients: 8               # shield the device from conn storms
     rate_per_sec: 50             # shield it from polling storms
     timeout_ms: 5000             # per-request upstream deadline
+    # extra_listen:              # optional (B10): additional front-leg
+    #   - ":5021"                # bind addresses for the SAME device —
+    #   - "127.0.0.2:5020"       # every door shares ONE upstream
+                                # connection, the conn cap, allow-list,
+                                # rate limit and TLS config
     # request_delay_ms: 10       # optional pacing (B5): minimum gap between
                                   # requests toward picky legacy devices
     # idle_timeout_ms: 60000     # optional (B6): close front connections

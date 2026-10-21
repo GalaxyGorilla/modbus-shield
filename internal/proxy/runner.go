@@ -19,8 +19,10 @@ type Runner struct {
 	bound chan struct{}
 }
 
-// NewRunner builds one gateway per config device. met may be nil
-// (no metrics).
+// NewRunner builds one gateway per config device. A device may carry
+// extra_listen addresses (B10): every listener is served by the same
+// gateway so all of its front doors share one upstream connection and
+// one set of shielding limits. met may be nil (no metrics).
 func NewRunner(cfg *config.Config, log Logger, met Metrics) (*Runner, error) {
 	met = metricsOrNop(met)
 	r := &Runner{log: log, met: met, bound: make(chan struct{})}
@@ -34,26 +36,40 @@ func NewRunner(cfg *config.Config, log Logger, met Metrics) (*Runner, error) {
 	return r, nil
 }
 
+// listenerAddrs returns every front-leg address for a gateway: the
+// primary listen_addr plus any extra_listen entries.
+func listenerAddrs(gw *gateway) []string {
+	addrs := make([]string, 0, 1+len(gw.dev.ExtraListen))
+	addrs = append(addrs, gw.dev.ListenAddr)
+	addrs = append(addrs, gw.dev.ExtraListen...)
+	return addrs
+}
+
 // Run binds all listeners and serves them until Stop. The first bind
 // error aborts startup and closes earlier listeners.
 func (r *Runner) Run() error {
 	for _, gw := range r.gws {
-		ln, err := net.Listen("tcp", gw.dev.ListenAddr)
-		if err != nil {
-			r.closeListeners()
-			return fmt.Errorf("bind %s: %w", gw.dev.ListenAddr, err)
+		for _, addr := range listenerAddrs(gw) {
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				r.closeListeners()
+				return fmt.Errorf("bind %s: %w", addr, err)
+			}
+			r.lns = append(r.lns, ln)
 		}
-		r.lns = append(r.lns, ln)
 	}
 	close(r.bound)
-	errCh := make(chan error, len(r.gws))
+	errCh := make(chan error, len(r.lns))
 	for i, gw := range r.gws {
-		ln := r.lns[i]
-		r.wg.Add(1)
-		go func() {
-			defer r.wg.Done()
-			errCh <- gw.Serve(ln)
-		}()
+		n := len(listenerAddrs(gw))
+		for _, ln := range r.lns[i : i+n] {
+			ln := ln
+			r.wg.Add(1)
+			go func() {
+				defer r.wg.Done()
+				errCh <- gw.Serve(ln)
+			}()
+		}
 	}
 	return <-errCh
 }

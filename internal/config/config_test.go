@@ -499,3 +499,27 @@ devices:
 		}
 	}
 }
+
+// TestExtraListenParsing covers the B10 YAML block: extra front-leg
+// listeners parse into ExtraListen and Validate accepts a consistent
+// multi-door setup.
+func TestExtraListenParsing(t *testing.T) {
+	path := writeTemp(t, `
+devices:
+  - name: legacy-plc
+    listen_addr: ":5020"
+    extra_listen: [":5021", "127.0.0.2:5020"]
+    device_addr: "10.0.0.42:502"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := cfg.Devices[0]
+	if len(d.ExtraListen) != 2 || d.ExtraListen[0] != ":5021" || d.ExtraListen[1] != "127.0.0.2:5020" {
+		t.Fatalf("extra_listen = %v", d.ExtraListen)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}

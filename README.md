@@ -160,7 +160,9 @@ with `validate --json`, and offer a "test connection" button backed by
 - **Multiplexing** — N client connections → one upstream connection,
   fair first-come-first-served scheduling, backpressure that never
   wedges (one stalled client cannot block the others).
-- **Multi-device** — one listener + device pair per config entry.
+- **Multi-device** — one listener + device pair per config entry, plus
+  optional `extra_listen` front doors sharing the same upstream
+  connection and shielding limits (B10).
 - **Unit-ID remapping** — `device_unit_id` rewrites requests toward the
   device and responses back to the client's unit ID (serial-gateway
   style).
