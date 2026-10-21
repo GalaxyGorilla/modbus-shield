@@ -21,6 +21,11 @@ devices:
     max_clients: 8               # shield the device from conn storms
     rate_per_sec: 50             # shield it from polling storms
     timeout_ms: 5000             # per-request upstream deadline
+    # request_delay_ms: 10       # optional pacing (B5): minimum gap between
+                                  # requests toward picky legacy devices
+    # idle_timeout_ms: 60000     # optional (B6): close front connections
+                                  # idle longer than this (frees cap slots
+                                  # from dead pollers)
     # device_unit_id: 17         # optional remap (serial-gateway style):
                                  # clients keep their unit IDs, the device
                                  # always sees 17; responses are rewritten

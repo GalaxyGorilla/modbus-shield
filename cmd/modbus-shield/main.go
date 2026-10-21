@@ -87,6 +87,8 @@ type cliFlags struct {
 	maxClients   *int
 	ratePerSec   *int
 	timeoutMs    *int
+	requestDelayMs *int
+	idleTimeoutMs  *int
 	deviceUnitID *string
 	healthUnitID *string
 	tlsCert      *string
@@ -116,6 +118,8 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.maxClients = fs.Int("max-clients", 0, "max concurrent client connections (0 = default 16)")
 	c.ratePerSec = fs.Int("rate-per-sec", 0, "max accepted requests per second (0 = unlimited)")
 	c.timeoutMs = fs.Int("timeout-ms", 0, "per-request upstream deadline in ms (0 = default 5000)")
+	c.requestDelayMs = fs.Int("request-delay-ms", 0, "minimum gap between requests toward the device in ms (0 = unpaced)")
+	c.idleTimeoutMs = fs.Int("idle-timeout-ms", 0, "close front connections idle longer than this in ms (0 = disabled)")
 	c.deviceUnitID = fs.String("device-unit-id", "", "unit ID sent upstream (serial-gateway remap; responses rewritten back)")
 	c.healthUnitID = fs.String("health-unit-id", "", "virtual unit-ID exposing proxy health registers (0-255; disabled when unset)")
 	c.tlsCert = fs.String("tls-cert", "", "front-leg TLS server certificate (PEM; enables TLS termination)")
@@ -150,6 +154,9 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 		MaxClients: *c.maxClients,
 		RatePerSec: *c.ratePerSec,
 		TimeoutMs:  *c.timeoutMs,
+
+		RequestDelayMs: *c.requestDelayMs,
+		IdleTimeoutMs:  *c.idleTimeoutMs,
 	}
 	if *c.deviceUnitID != "" {
 		u, err := strconv.ParseUint(*c.deviceUnitID, 10, 8)
@@ -488,6 +495,7 @@ Usage (flags, no config file — plug and play):
   modbus-shield gateway --listen <ip:port> --device <legacy-device:port> \
       [--read-only] [--allow <ip|cidr>]... [--max-clients <n>] \
       [--rate-per-sec <n>] [--timeout-ms <ms>] [--device-unit-id <id>] \
+      [--request-delay-ms <ms>] [--idle-timeout-ms <ms>] \
       [--health-unit-id <id>] \
       [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]] \
       [--device-tls-ca <pem> [--device-tls-server-name <name>] \
@@ -498,6 +506,9 @@ The gateway is a single box in front of the legacy device: N clients are
 multiplexed over ONE connection to the device (many legacy devices accept
 only one), writes can be blocked (--read-only), clients restricted
 (--allow) and the device shielded from polling storms (--rate-per-sec).
+Pacing (--request-delay-ms) keeps a minimum gap between requests toward
+picky legacy devices; --idle-timeout-ms reaps front connections idle
+longer than the TTL (frees connection-cap slots from dead pollers).
 With --tls-cert/--tls-key the front leg terminates TLS (add
 --tls-client-ca for mTLS); the device-side wire stays plain Modbus TCP.
 With --device-tls-* the upstream leg is secured instead: the box dials

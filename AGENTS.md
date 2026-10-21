@@ -44,13 +44,13 @@ serial ports.
 ## 3. Status / Roadmap
 
 **Current state: v1 feature-complete + B1 (TLS front leg) + B2 (two-proxy
-secured line). Per-device `tls:` block terminates TLS on the front leg;
-`device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`) secures the
-upstream leg — the front box dials the device over TLS, the far side is a
-second gateway with front-leg `tls:` (mTLS both hops via stdlib X.509).
-E2E: full two-box chain (client→TLS→front→TLS→far→plain→device),
-server_name override, bad-CA rejection (device never sees rejected TLS).
-Full suite green under `-race`; staticcheck + govulncheck clean.**
+secured line) + B4 (health-via-Modbus) + B5 (inter-request pacing) + B6
+(idle client timeout). Per-device `tls:` block terminates TLS on the front
+leg; `device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`) secures
+the upstream leg; `health_unit_id` exposes 18 proxy health registers on a
+virtual unit-ID; `request_delay_ms` paces picky devices; `idle_timeout_ms`
+reaps dead clients. Full suite green under `-race`; staticcheck +
+govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -66,6 +66,9 @@ Full suite green under `-race`; staticcheck + govulncheck clean.**
 | Docs: README (why/deployment shapes/decision guidance), examples, systemd units | done (README + examples: gateway/multi-device/operations + deploy unit + make interop) |
 | B1: TLS front leg (per-device `tls:` block + flags, mTLS) | done (config/proxy/CLI/tests + examples/tls.md) |
 | B2: two-proxy secured line (`device_tls:` upstream leg + flags) | done (config/proxy/CLI/tests + examples/two-proxy.md) |
+| B4: health-via-Modbus virtual unit-ID (`health_unit_id`) | done (proxy/health.go + tests + examples/health.md) |
+| B5: inter-request pacing (`request_delay_ms`) | done (upstream timer + tests) |
+| B6: idle client timeout (`idle_timeout_ms`) | done (handleClient read deadline + tests) |
 
 ### Verification targets (from the plan)
 
@@ -227,6 +230,20 @@ or set `-timeout` on `go test` (network tests would hang without one).
   never consume rate tokens), then rate limit, then remap + exchange.
   Rate-rejected requests get exception 0x06 Server Device Busy (spec:
   "client should retry later") and the device never sees them.
+- **Pacing + idle timeout contracts (B5/B6)**: `request_delay_ms` is
+  enforced in `upstream.exchange` under `u.mu` (before `ensureConn`) —
+  the gap is measured across ALL client requests multiplexed onto the
+  one device connection, which is exactly the serialization point a
+  picky device sees; the sleep is charged against the exchange deadline
+  (a slow-paced device = a slow exchange, deadline still bounds it).
+  `lastRequest` records when each exchange starts (send/attempt time),
+  set even when the delay is 0 so enabling pacing mid-run is coherent.
+  `idle_timeout_ms` bounds ONLY the read waiting for the next request in
+  `handleClient` (deadline reset each iteration; cleared explicitly with
+  a zero Time when unset) — in-flight exchanges keep their own upstream
+  deadline and response writes keep `writeTimeout`; a reaped client just
+  loses its connection, the next one works immediately. Both fields
+  default to 0 = disabled; Validate rejects negatives.
 - **`proxy.Metrics` interface contract** (logger.go, implemented by
   `internal/observ.Metrics`): every method nil-safe — call sites never
   check for nil; `metricsOrNop(met)` normalizes nil to `nopMetrics{}` at

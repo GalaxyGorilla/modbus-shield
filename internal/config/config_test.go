@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -431,5 +432,70 @@ devices:
 	}
 	if cfg.Devices[0].HasHealth() {
 		t.Fatal("HasHealth = true without health_unit_id")
+	}
+}
+
+func TestShieldingDelayParsing(t *testing.T) {
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+    request_delay_ms: 25
+    idle_timeout_ms: 60000
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasIdleTimeout() {
+		t.Fatal("HasIdleTimeout = false, want true")
+	}
+	if got := d.IdleTimeout(); got != 60*time.Second {
+		t.Fatalf("IdleTimeout = %v, want 60s", got)
+	}
+	if got := d.RequestDelay(); got != 25*time.Millisecond {
+		t.Fatalf("RequestDelay = %v, want 25ms", got)
+	}
+	// Disabled variants.
+	cfg2, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+`))
+	if err != nil {
+		t.Fatalf("parse minimal: %v", err)
+	}
+	d2 := cfg2.Devices[0]
+	if d2.HasIdleTimeout() {
+		t.Fatal("HasIdleTimeout = true for unset field")
+	}
+	if d2.IdleTimeout() != 0 || d2.RequestDelay() != 0 {
+		t.Fatal("delay/timeout should default to 0 (disabled)")
+	}
+}
+
+func TestShieldingDelayValidateErrors(t *testing.T) {
+	cases := []struct{ name, yaml, want string }{
+		{"negative delay", `
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+    request_delay_ms: -5
+`, "request_delay_ms must be >= 0"},
+		{"negative idle", `
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+    idle_timeout_ms: -1
+`, "idle_timeout_ms must be >= 0"},
+	}
+	for _, tc := range cases {
+		_, err := Parse([]byte(tc.yaml))
+		if err == nil {
+			t.Fatalf("%s: expected error", tc.name)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: error %q, want substring %q", tc.name, err, tc.want)
+		}
 	}
 }

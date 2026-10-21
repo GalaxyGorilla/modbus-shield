@@ -77,6 +77,7 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 	}
 	up := newUpstream(dev.DeviceAddr, dev.Name, log, met)
 	up.tlsDial = devTLS
+	up.requestDelay = dev.RequestDelay()
 	up.setUpstreamHealth(health)
 	return &gateway{		dev:          dev,
 		up:           up,
@@ -154,11 +155,22 @@ func (g *gateway) admit(conn net.Conn) bool {
 // handleClient runs the per-client lock-step loop: read one request,
 // forward it upstream, write one response. Any client-side error ends the
 // connection; upstream errors are converted to Modbus gateway exceptions
-// and the connection stays usable.
+// and the connection stays usable. When idle_timeout_ms is configured,
+// the read is deadline-bounded: clients that stay idle longer than the
+// TTL lose their connection (reclaims a shielding connection-cap slot
+// from dead or hung pollers).
 func (g *gateway) handleClient(conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
 	for {
+		// B6: reap idle clients. Only the read (waiting for the next
+		// request) is idle-bounded; an in-flight exchange has its own
+		// upstream deadline and response writes get writeTimeout.
+		if g.dev.HasIdleTimeout() {
+			conn.SetReadDeadline(deadlineFromNow(g.dev.IdleTimeout()))
+		} else {
+			conn.SetReadDeadline(time.Time{}) // no TTL: clear any prior deadline
+		}
 		req, err := mbtcp.ReadADU(conn)
 		if err != nil {
 			g.log.Debugf("gateway %s: %s: closing: %v", g.dev.Name, remote, err)

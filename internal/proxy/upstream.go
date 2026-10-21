@@ -39,6 +39,15 @@ type upstream struct {
 	// config; two-proxy secured line). nil = plain TCP.
 	tlsDial *tls.Config
 
+	// requestDelay, when > 0, enforces a minimum gap between consecutive
+	// requests toward the device (request_delay_ms; B5 — picky legacy
+	// devices that choke on back-to-back traffic). 0 = unpaced.
+	requestDelay time.Duration
+
+	// lastRequest is when the last exchange happened; used by the B5
+	// pacing logic.
+	lastRequest time.Time
+
 	mu   sync.Mutex
 	conn net.Conn
 
@@ -64,6 +73,20 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration) (mbtcp.ADU, er
 	defer u.mu.Unlock()
 
 	deadline := time.Now().Add(timeout)
+
+	// B5 pacing: enforce a minimum gap between consecutive requests
+	// toward the device. Under u.mu, so the gap is measured across ALL
+	// client requests multiplexed onto this connection — exactly the
+	// serialization point a picky device cares about. Charged against
+	// the exchange deadline (a slow-paced device is a slow exchange).
+	if u.requestDelay > 0 && !u.lastRequest.IsZero() {
+		if wait := u.requestDelay - time.Since(u.lastRequest); wait > 0 {
+			u.log.Debugf("device %s: pacing %v between requests", u.addr, u.requestDelay)
+			time.Sleep(wait)
+		}
+	}
+	u.lastRequest = time.Now()
+
 	conn, err := u.ensureConn(deadline)
 	if err != nil {
 		return mbtcp.ADU{}, err

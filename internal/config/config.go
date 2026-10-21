@@ -48,6 +48,17 @@ type Device struct {
 	// 0 = default (5000).
 	TimeoutMs int `yaml:"timeout_ms"`
 
+	// RequestDelayMs, when set, paces requests toward the device (B5):
+	// the proxy enforces at least this much gap between consecutive
+	// requests on the upstream connection, shielding picky legacy
+	// devices from back-to-back traffic. 0 = unpaced.
+	RequestDelayMs int `yaml:"request_delay_ms"`
+
+	// IdleTimeoutMs, when set, closes front-leg connections that stay
+	// idle longer than this (B6) — reclaims connection-cap slots from
+	// dead or hung clients (e.g. crashed pollers). 0 = disabled.
+	IdleTimeoutMs int `yaml:"idle_timeout_ms"`
+
 	// DeviceUnitID, when set, overrides the unit ID sent upstream
 	// (serial-gateway style remap: client unit IDs pass through the
 	// front leg, the device always sees this value; the gateway rewrites
@@ -212,6 +223,12 @@ func (c *Config) Validate() error {
 		if d.TimeoutMs < 0 {
 			return fmt.Errorf("config: %s: timeout_ms must be >= 0", label)
 		}
+		if d.RequestDelayMs < 0 {
+			return fmt.Errorf("config: %s: request_delay_ms must be >= 0", label)
+		}
+		if d.IdleTimeoutMs < 0 {
+			return fmt.Errorf("config: %s: idle_timeout_ms must be >= 0", label)
+		}
 		for j, cidr := range d.Allow {
 			if !validIPorCIDR(cidr) {
 				return fmt.Errorf("config: %s: allow[%d]: invalid IP or CIDR %q", label, j, cidr)
@@ -245,6 +262,21 @@ func (c *Config) Validate() error {
 // RequestTimeout returns the per-request upstream deadline for a device.
 func (d *Device) RequestTimeout() time.Duration {
 	return time.Duration(d.TimeoutMs) * time.Millisecond
+}
+
+// RequestDelay returns the minimum gap between consecutive upstream
+// requests (0 = unpaced).
+func (d *Device) RequestDelay() time.Duration {
+	return time.Duration(d.RequestDelayMs) * time.Millisecond
+}
+
+// HasIdleTimeout reports whether idle client connections are reaped
+// (idle_timeout_ms > 0).
+func (d *Device) HasIdleTimeout() bool { return d.IdleTimeoutMs > 0 }
+
+// IdleTimeout returns the idle-client connection TTL (0 = disabled).
+func (d *Device) IdleTimeout() time.Duration {
+	return time.Duration(d.IdleTimeoutMs) * time.Millisecond
 }
 
 // HasUnitRemap reports whether a device-side unit ID override is set.

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -140,5 +141,91 @@ func TestGatewayRateLimit(t *testing.T) {
 	// Rejected requests must never have reached the device.
 	if got := int(dev.Served()); got != admitted {
 		t.Fatalf("device served %d, want exactly the %d admitted", got, admitted)
+	}
+}
+
+// B5: request_delay_ms paces requests toward the device — the gateway
+// serializes all client traffic onto one upstream connection, so the gap
+// is enforced across ALL clients exactly at the device-facing point.
+
+// rawExchange sends one FC3 read of register 0x0100 with the given
+// transaction ID and returns the raw response ADU (exceptions included).
+func rawExchange(t *testing.T, conn net.Conn, txn uint16) mbtcp.ADU {
+	t.Helper()
+	adu, err := mbtcp.NewADU(txn, 1, []byte{3, 0x01, 0x00, 0x00, 0x01})
+	if err != nil {
+		t.Fatalf("NewADU: %v", err)
+	}
+	if _, err := conn.Write(adu.Frame()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	resp, err := mbtcp.ReadADU(conn)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.Header.TransactionID != txn {
+		t.Fatalf("correlation failed: got txn %d, want %d", resp.Header.TransactionID, txn)
+	}
+	return resp
+}
+
+func TestGatewayRequestDelay(t *testing.T) {
+	dev := newFakeDevice(t)
+	front := startGatewayTLS(t, dev, func(d *config.Device) {
+		d.Name = "paced-dev"
+		d.RequestDelayMs = 100
+		d.TimeoutMs = 8000
+	})
+	conn := dial(t, front)
+	defer conn.Close()
+
+	// 5 sequential reads; with 100ms pacing the total must take at least
+	// 4 * 100ms = 400ms (the gap applies between consecutive requests).
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		resp := rawExchange(t, conn, 0x1234)
+		if resp.IsException() {
+			t.Fatalf("read %d: unexpected exception", i)
+		}
+	}
+	elapsed := time.Since(start)
+	if elapsed < 380*time.Millisecond {
+		t.Fatalf("5 paced reads took %v, want >= ~400ms (pacing not enforced)", elapsed)
+	}
+	if dev.Served() != 5 {
+		t.Fatalf("device served = %d, want 5", dev.Served())
+	}
+}
+
+// B6: idle_timeout_ms reaps front connections that stay idle beyond the
+// TTL — a dead/hung client must not hold a connection-cap slot forever.
+func TestGatewayIdleTimeoutReapsClient(t *testing.T) {
+	dev := newFakeDevice(t)
+	front := startGatewayTLS(t, dev, func(d *config.Device) {
+		d.Name = "idle-dev"
+		d.IdleTimeoutMs = 300
+		d.TimeoutMs = 2000
+	})
+	conn := dial(t, front)
+
+	// First read works.
+	resp := rawExchange(t, conn, 0x1234)
+	if resp.IsException() {
+		t.Fatal("first read: unexpected exception")
+	}
+
+	// Idle beyond the TTL: the proxy must close the connection.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 16)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("connection still open after idle TTL; want closed by proxy")
+	}
+
+	// A fresh connection works fine afterward.
+	conn2 := dial(t, front)
+	defer conn2.Close()
+	if r := rawExchange(t, conn2, 0x4321); r.IsException() {
+		t.Fatal("post-reap read: unexpected exception")
 	}
 }
