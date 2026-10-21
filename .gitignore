@@ -1,0 +1,31 @@
+# Binaries
+/bin/
+/modbus-shield
+*.exe
+
+# SBOM output
+/dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Local certs/keys and credentials — NEVER commit
+*.pem
+*.key
+*.crt
+*.csr
+certs/
+!**/testdata/*.pem
+!**/testdata/*.key
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Go workspace
+go.work
+go.work.sum
