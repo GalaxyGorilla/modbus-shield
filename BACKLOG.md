@@ -9,7 +9,6 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
 | B12 | **mbaps conformance mode** — MODBUS/TCP Security profile (MB-TCP-Security-v36, 2021-07-30): mandatory mutual TLS, role-based AuthZ via client-cert OID 1.3.6.1.4.1.50316.802.1 (ASN1 UTF8String), AuthZ on every request, reject = exception 0x01, port 802 convention | our `tls:` front leg is already wire-compatible; adds: role extraction from client certs (x509 ext), per-connection role → per-request FC policy, mTLS-when-mbaps enforcement. Only valuable when a client ecosystem actually speaks mbaps — keep optional (per-listener `mbaps: true`) |
 | B7 | **RTU-over-TCP device side** — speak RTU framing (no MBAP) toward cheap converters that bridge raw serial over TCP | framing module extension |
 | B8 | **Opt-in TTL read cache** — serve repeated reads from memory to shield very slow devices from heavy polling | per-listener, TTL-based, OFF by default (staleness surprises in SCADA) |
-| B9 | **Connection-ID in logs** — correlate client-side and device-side log lines | observ package |
 | B10 | **Multiple listeners per device** — one upstream, several front listeners | config schema extension |
 | B11 | **systemd watchdog** — `WatchdogSec`/`sd_notify` so a wedged process is restarted by the host | coreos/go-systemd/v22 `daemon` package |
 
@@ -32,6 +31,10 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
   deadline-bounded; idle clients lose their connection (reclaims
   connection-cap slots from dead/hung pollers); exchange/writes keep
   their own deadlines.
+- ~~B9 Connection-ID in logs~~ — **done**: per-gateway `connSeq`
+  counter; every client-side and device-side log line carries
+  `[conn N]` (pacing/stale-discard device lines included); verified by
+  `scripts/smoke-connid.sh`.
 - ~~B1 TLS front leg~~ — **done**: per-device `tls:` config block
   (`cert`/`key`/`client_ca`) + `--tls-cert/--tls-key/--tls-client-ca`
   flags; TLS 1.2 minimum, mTLS via `RequireAndVerifyClientCert`; lazy

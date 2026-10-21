@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GalaxyGorilla/modbus-shield/internal/mbtcp"
@@ -34,6 +35,11 @@ type upstream struct {
 	name string // config device name (metrics + logs)
 	log  Logger
 	met  Metrics
+
+	// connSeq hands out per-gateway connection IDs (B9); shared with the
+	// gateway that owns this upstream so client and device log lines
+	// carry the same ID.
+	connSeq *atomic.Uint64
 
 	// tlsDial, when set, dials the device address over TLS (device_tls
 	// config; two-proxy secured line). nil = plain TCP.
@@ -67,8 +73,10 @@ func (u *upstream) setUpstreamHealth(h *healthRegistry) {
 }
 
 // exchange forwards req to the device and returns the matching response.
-// timeout bounds the whole exchange (dial retries included).
-func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration) (mbtcp.ADU, error) {
+// timeout bounds the whole exchange (dial retries included). connID is
+// the front-leg connection ID (B9) that caused this exchange; it is
+// attached to device-side log lines so client and device logs correlate.
+func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64) (mbtcp.ADU, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
@@ -81,7 +89,8 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration) (mbtcp.ADU, er
 	// the exchange deadline (a slow-paced device is a slow exchange).
 	if u.requestDelay > 0 && !u.lastRequest.IsZero() {
 		if wait := u.requestDelay - time.Since(u.lastRequest); wait > 0 {
-			u.log.Debugf("device %s: pacing %v between requests", u.addr, u.requestDelay)
+			u.log.Debugf("device %s: [conn %d] pacing %v between requests",
+				u.addr, connID, u.requestDelay)
 			time.Sleep(wait)
 		}
 	}
@@ -105,8 +114,8 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration) (mbtcp.ADU, er
 		if resp.Header.TransactionID != req.Header.TransactionID {
 			// Late/stale response from an earlier timed-out request.
 			// The stream is frame-aligned, so skipping is safe.
-			u.log.Debugf("device %s: discarding stale response (txn %d, want %d)",
-				u.addr, resp.Header.TransactionID, req.Header.TransactionID)
+			u.log.Debugf("device %s: [conn %d] discarding stale response (txn %d, want %d)",
+				u.addr, connID, resp.Header.TransactionID, req.Header.TransactionID)
 			u.met.IncStaleDiscard()
 			u.health.incStale()
 			continue

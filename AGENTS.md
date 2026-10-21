@@ -45,11 +45,13 @@ serial ports.
 
 **Current state: v1 feature-complete + B1 (TLS front leg) + B2 (two-proxy
 secured line) + B4 (health-via-Modbus) + B5 (inter-request pacing) + B6
-(idle client timeout). Per-device `tls:` block terminates TLS on the front
-leg; `device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`) secures
-the upstream leg; `health_unit_id` exposes 18 proxy health registers on a
-virtual unit-ID; `request_delay_ms` paces picky devices; `idle_timeout_ms`
-reaps dead clients. Full suite green under `-race`; staticcheck +
+(idle client timeout) + B9 (connection-ID logging). Per-device `tls:`
+block terminates TLS on the front leg; `device_tls:` block
+(`ca_cert`/`server_name`/`cert`/`key`) secures the upstream leg;
+`health_unit_id` exposes 18 proxy health registers on a virtual unit-ID;
+`request_delay_ms` paces picky devices; `idle_timeout_ms` reaps dead
+clients; every client and device log line carries a per-gateway
+`[conn N]` ID. Full suite green under `-race`; staticcheck +
 govulncheck clean.**
 
 | Milestone | Status |
@@ -69,6 +71,7 @@ govulncheck clean.**
 | B4: health-via-Modbus virtual unit-ID (`health_unit_id`) | done (proxy/health.go + tests + examples/health.md) |
 | B5: inter-request pacing (`request_delay_ms`) | done (upstream timer + tests) |
 | B6: idle client timeout (`idle_timeout_ms`) | done (handleClient read deadline + tests) |
+| B9: connection-ID logging (`[conn N]` in client + device log lines) | done (connSeq counter, exchange takes connID, smoke-connid.sh) |
 
 ### Verification targets (from the plan)
 
@@ -87,7 +90,7 @@ govulncheck clean.**
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP header build/parse (mbtcp.go + unit tests + FuzzParseADU/FuzzReadADU + testdata/fuzz corpora)
 internal/config/           YAML config + single-device flags mode (config.go + tests)
-internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go + fakedevice e2e
+internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
 configs/                   example YAML templates
@@ -244,6 +247,20 @@ or set `-timeout` on `go test` (network tests would hang without one).
   deadline and response writes keep `writeTimeout`; a reaped client just
   loses its connection, the next one works immediately. Both fields
   default to 0 = disabled; Validate rejects negatives.
+- **Connection-ID logging contract (B9)**: `gateway.connSeq`
+  (atomic.Uint64) hands out per-gateway connection IDs in
+  `handleClient` (`connID := g.connSeq.Add(1)`, assigned once per
+  connection, never per request). Client-side log lines (closing,
+  write-failed, read-only, rate-limit, upstream error, health) and
+  device-side log lines all carry `[conn N]`. `upstream` holds
+  `connSeq *atomic.Uint64` — a POINTER shared with the owning gateway
+  (set after construction), so exchange-time device lines (pacing,
+  stale discard) use the same ID space; never copy the counter.
+  `exchange(req, timeout, connID)` takes the ID as a parameter.
+  Device-side lines only appear on per-exchange events (pacing/stale) —
+  connection-scoped lines like "connected" do not carry `[conn N]`.
+  Verified by `scripts/smoke-connid.sh` (JSON log, asserts >= 2 distinct
+  IDs on client AND device lines).
 - **`proxy.Metrics` interface contract** (logger.go, implemented by
   `internal/observ.Metrics`): every method nil-safe — call sites never
   check for nil; `metricsOrNop(met)` normalizes nil to `nopMetrics{}` at

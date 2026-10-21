@@ -48,6 +48,10 @@ type gateway struct {
 	// healthUnitID is the virtual unit-ID health requests are addressed
 	// to (only meaningful when health != nil).
 	healthUnitID uint8
+
+	// connSeq hands out per-gateway connection IDs (B9) so client-side
+	// and device-side log lines correlate on one ID.
+	connSeq atomic.Uint64
 }
 
 func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
@@ -79,7 +83,8 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 	up.tlsDial = devTLS
 	up.requestDelay = dev.RequestDelay()
 	up.setUpstreamHealth(health)
-	return &gateway{		dev:          dev,
+	g := &gateway{
+		dev:          dev,
 		up:           up,
 		log:          log,
 		allow:        allow,
@@ -89,7 +94,9 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		met:          metricsOrNop(met),
 		health:       health,
 		healthUnitID: healthUnitID,
-	}, nil
+	}
+	up.connSeq = &g.connSeq
+	return g, nil
 }
 
 // Serve runs the accept loop on ln until it is closed. Client-side errors
@@ -162,6 +169,7 @@ func (g *gateway) admit(conn net.Conn) bool {
 func (g *gateway) handleClient(conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
+	connID := g.connSeq.Add(1) // B9: correlate client + device log lines
 	for {
 		// B6: reap idle clients. Only the read (waiting for the next
 		// request) is idle-bounded; an in-flight exchange has its own
@@ -173,35 +181,39 @@ func (g *gateway) handleClient(conn net.Conn) {
 		}
 		req, err := mbtcp.ReadADU(conn)
 		if err != nil {
-			g.log.Debugf("gateway %s: %s: closing: %v", g.dev.Name, remote, err)
+			g.log.Debugf("gateway %s: [conn %d] %s: closing: %v",
+				g.dev.Name, connID, remote, err)
 			return
 		}
 
-		resp := g.serve(conn, req)
+		resp := g.serve(conn, req, connID)
 		if err := writeADU(conn, resp); err != nil {
-			g.log.Debugf("gateway %s: %s: write failed: %v", g.dev.Name, remote, err)
+			g.log.Debugf("gateway %s: [conn %d] %s: write failed: %v",
+				g.dev.Name, connID, remote, err)
 			return
 		}
 	}
 }
 
 // serve processes one request and returns the response to send back to
-// the client (never touches conn).
-func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
+// the client (never touches conn). connID is the B9 connection ID for
+// log correlation.
+func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64) mbtcp.ADU {
 	clientUnit := req.Header.UnitID
 
 	// Health endpoint: requests addressed to the virtual health unit-ID
 	// are answered by the proxy itself (B4) — before policy and rate
 	// limiting, so monitoring stays responsive during a shielding event.
 	if g.health != nil && clientUnit == g.healthUnitID {
-		g.log.Debugf("gateway %s: %s: serving health unit %d", g.dev.Name, conn.RemoteAddr(), g.healthUnitID)
+		g.log.Debugf("gateway %s: [conn %d] %s: serving health unit %d",
+			g.dev.Name, connID, conn.RemoteAddr(), g.healthUnitID)
 		return g.serveHealth(req)
 	}
 
 	// Read-only policy: reject writes locally; the device never sees them.
 	if g.dev.ReadOnly && acl.IsWrite(req.FunctionCode()) {
-		g.log.Infof("gateway %s: %s: blocked write FC %d (read-only)",
-			g.dev.Name, conn.RemoteAddr(), req.FunctionCode())
+		g.log.Infof("gateway %s: [conn %d] %s: blocked write FC %d (read-only)",
+			g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode())
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionPolicy)
 		g.health.incPolicy()
 		return g.exception(req, clientUnit, mbtcp.ExceptionIllegalFunction)
@@ -210,8 +222,8 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 	// Rate limiting: shield the device from polling storms. Rejected
 	// requests get Server Device Busy and the device never sees them.
 	if g.lim != nil && !g.lim.Allow() {
-		g.log.Warnf("gateway %s: %s: rate limit (%d/s) exceeded, FC %d rejected",
-			g.dev.Name, conn.RemoteAddr(), g.dev.RatePerSec, req.FunctionCode())
+		g.log.Warnf("gateway %s: [conn %d] %s: rate limit (%d/s) exceeded, FC %d rejected",
+			g.dev.Name, connID, conn.RemoteAddr(), g.dev.RatePerSec, req.FunctionCode())
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
 		g.health.incRate()
 		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
@@ -223,11 +235,11 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 	}
 
 	start := time.Now()
-	resp, err := g.up.exchange(req, g.dev.RequestTimeout())
+	resp, err := g.up.exchange(req, g.dev.RequestTimeout(), connID)
 	g.met.ObserveLatency(g.dev.Name, time.Since(start))
 	if err != nil {
-		g.log.Warnf("gateway %s: %s: upstream error: %v",
-			g.dev.Name, conn.RemoteAddr(), err)
+		g.log.Warnf("gateway %s: [conn %d] %s: upstream error: %v",
+			g.dev.Name, connID, conn.RemoteAddr(), err)
 		g.met.IncUpstreamError()
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionDevice)
 		g.health.incUpstreamError()

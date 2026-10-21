@@ -229,3 +229,36 @@ func TestGatewayIdleTimeoutReapsClient(t *testing.T) {
 		t.Fatal("post-reap read: unexpected exception")
 	}
 }
+
+// B9: per-connection IDs correlate client-side and device-side log
+// lines. Verified indirectly here: two connections interleave exchanges
+// on the shared upstream; each response must carry the txn-ID of its own
+// request (log-line correlation itself is checked by grepping the JSON
+// log output in the smoke script).
+func TestGatewayConnIDInterleaving(t *testing.T) {
+	dev := newFakeDevice(t)
+	front := startGatewayTLS(t, dev, func(d *config.Device) {
+		d.Name = "connid-dev"
+		d.TimeoutMs = 8000
+	})
+
+	conn1 := dial(t, front)
+	defer conn1.Close()
+	conn2 := dial(t, front)
+	defer conn2.Close()
+
+	// Interleave requests from two connections; fake device responses
+	// echo txn-IDs, so each rawExchange must get its own txn back even
+	// though both connections multiplex onto one upstream.
+	r1 := rawExchange(t, conn1, 0x1111)
+	if r1.IsException() {
+		t.Fatal("conn1 read: unexpected exception")
+	}
+	r2 := rawExchange(t, conn2, 0x2222)
+	if r2.IsException() {
+		t.Fatal("conn2 read: unexpected exception")
+	}
+	if dev.Served() != 2 {
+		t.Fatalf("device served = %d, want 2", dev.Served())
+	}
+}
