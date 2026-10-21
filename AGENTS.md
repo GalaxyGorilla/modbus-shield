@@ -47,7 +47,8 @@ serial ports.
 secured line) + B4 (health-via-Modbus) + B5 (inter-request pacing) + B6
 (idle client timeout) + B9 (connection-ID logging) + B10 (multiple
 listeners per device) + B11 (systemd watchdog) + B12 (mbaps role
-authorization). Per-device `tls:` block terminates TLS on the front leg;
+authorization) + B7 (RTU-over-TCP device side). Per-device `tls:` block
+terminates TLS on the front leg;
 `device_tls:` block (`ca_cert`/`server_name`/`cert`/`key`) secures the
 upstream leg; `health_unit_id` exposes 18 proxy health registers on a
 virtual unit-ID; `request_delay_ms` paces picky devices;
@@ -57,7 +58,9 @@ that share one upstream connection and all shielding limits; the gateway
 speaks sd_notify (`READY=1` + `WATCHDOG=1` pings, internal/watchdog) and
 the deploy unit is `Type=notify` + `WatchdogSec=30`; `mbaps:` enforces
 per-role function-code rights from client-cert roles over mandatory
-mTLS. Full suite green under `-race`; staticcheck + govulncheck clean.**
+mTLS; `rtu_over_tcp` speaks bare Modbus RTU on the device leg for
+serial-to-TCP converters (front leg stays Modbus TCP). Full suite green
+under `-race`; staticcheck + govulncheck clean.**
 
 | Milestone | Status |
 |---|---|
@@ -80,6 +83,7 @@ mTLS. Full suite green under `-race`; staticcheck + govulncheck clean.**
 | B10: multiple listeners per device (`extra_listen` + `--extra-listen`) | done (config/proxy/CLI/tests; one upstream shared by all doors) |
 | B11: systemd watchdog (`Type=notify` + `WatchdogSec`, sd_notify pings) | done (internal/watchdog + tests + real-binary smoke; deploy unit updated) |
 | B12: mbaps role authorization (`mbaps:` block + `--mbaps-role`, per-role FC rights over mTLS) | done (config/proxy/CLI/tests + examples/mbaps.md + real-binary smoke) |
+| B7: RTU-over-TCP device side (`rtu_over_tcp` + `--rtu-over-tcp`) | done (mbtcp RTU framing + upstream translation + tests + real-binary smoke) |
 
 ### Verification targets (from the plan)
 
@@ -96,7 +100,7 @@ mTLS. Full suite green under `-race`; staticcheck + govulncheck clean.**
 
 ```
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
-internal/mbtcp/            MBAP header build/parse (mbtcp.go + unit tests + FuzzParseADU/FuzzReadADU + testdata/fuzz corpora)
+internal/mbtcp/            MBAP + RTU framing (mbtcp.go, rtu.go + tests + FuzzParseADU/FuzzReadADU + corpora)
 internal/config/           YAML config + single-device flags mode (config.go + tests)
 internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
@@ -388,6 +392,29 @@ or set `-timeout` on `go test` (network tests would hang without one).
   unconfigured role, health bypass) + real-binary smoke with OpenSSL
   certs (`1.3.6.1.4.1.50316.802.1=ASN1:UTF8String:operator` ext line).
   Full port-802 mbaps conformance stays out of scope.
+- **RTU-over-TCP contract (B7)** (`internal/mbtcp/rtu.go` +
+  `upstream.exchangeRTU`): `rtu_over_tcp: true` (or `--rtu-over-tcp`)
+  switches the DEVICE leg to bare Modbus RTU framing (unit address +
+  PDU + CRC16, MODBUS over Serial Line V1.02) — for cheap serial-to-TCP
+  converters without MBAP. In-house CRC-16/MODBUS (`CRC16`, poly 0xA001
+  reflected, init 0xFFFF, low byte first on the wire; catalog check
+  "123456789" -> 0x4B37). RTU has no length field, so response frames
+  are read by predicting their shape from the RESPONSE's function code
+  (fc|0x80 = code+CRC; FC 1/2/3/4/23 = bytecount+data+CRC; FC
+  5/6/15/16 = fixed 6; FC 22 = fixed 8; anything else = idle-gap
+  framing: read until a quiet gap, clamped by the exchange deadline).
+  `upstream.exchange` branches to `exchangeRTU` after ensureConn:
+  MBAP ADU -> `RTUFrame(req unit, pdu)`, response -> `NewADU(req txn,
+  resp unit, resp pdu)` — transaction/protocol IDs are reconstructed
+  (RTU has none); stale-RTU-response discard correlates by UNIT ADDRESS.
+  The front leg stays Modbus TCP (clients notice nothing); pacing (B5)
+  wraps RTU exchanges; works with `device_tls` (RTU bytes ride inside
+  the TLS tunnel). **Request shapes have NO bytecount for FC 1-6** (the
+  bytecount is a response-only field — real bug caught in the fake
+  device: FC3 request = addr,fc,reg(2),qty(2),CRC fixed 6-byte body);
+  response shapes DO carry it. Verified by unit tests (CRC known
+  answers, round-trips, gap fallback via net.Pipe, deadline clamp) +
+  e2e (read/exception/unit-ID/remap) + real-binary smoke.
 - **systemd watchdog contract (B11)** (`internal/watchdog`, wrapper on
   coreos/go-systemd/v22 `daemon`): `Interval()` = `SdWatchdogEnabled`
   (0 when not under systemd), `NotifyReady()` sends `READY=1`,

@@ -98,6 +98,7 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 	up := newUpstream(dev.DeviceAddr, dev.Name, log, met)
 	up.tlsDial = devTLS
 	up.requestDelay = dev.RequestDelay()
+	up.rtuOverTCP = dev.HasRTUOverTCP()
 	up.setUpstreamHealth(health)
 	g := &gateway{
 		dev:          dev,

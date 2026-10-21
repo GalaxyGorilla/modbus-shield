@@ -6,11 +6,25 @@ technology researched for it (verified healthy on GitHub, Oct 2026).
 | # | Item | Technology / notes |
 |---|---|---|
 | B3 | **Transparent bump-in-the-wire mode** — L2 splice, zero client/device reconfiguration, cable-splice install; intercept port 502 inline, pass other traffic | **florianl/go-nfqueue** first candidate (MIT, netfilter queue API, needs CAP_NET_ADMIN); cilium/ebpf = later performance path (linux amd64/arm64 only). Design spike needed; Linux-only |
-| B7 | **RTU-over-TCP device side** — speak RTU framing (no MBAP) toward cheap converters that bridge raw serial over TCP | framing module extension |
 | B8 | **Opt-in TTL read cache** — serve repeated reads from memory to shield very slow devices from heavy polling | per-listener, TTL-based, OFF by default (staleness surprises in SCADA) |
 
 ## Done (kept for reference)
 
+- ~~B7 RTU-over-TCP device side~~ — **done**: `rtu_over_tcp: true`
+  (or `--rtu-over-tcp`) makes the device leg speak bare Modbus RTU
+  frames (unit address + PDU + CRC16, MODBUS over Serial Line V1.02) for
+  cheap serial-to-TCP converters without MBAP. In-house CRC-16/MODBUS +
+  RTU framing in `internal/mbtcp` (`RTUFrame`, `ReadRTUResponse`,
+  `VerifyRTUFrame`); response frames are read by predicting their shape
+  from the response's function code (byte-count / fixed / exception
+  shapes per V1.1b3) with an idle-gap fallback for unlisted codes;
+  CRC-verified. The proxy translates MBAP ADU ↔ RTU frame (txn/protocol
+  IDs reconstructed — RTU has none); the front leg stays Modbus TCP;
+  works with `device_tls` (RTU bytes ride inside the TLS tunnel);
+  stale-RTU-response discard by unit address. Request shapes on the
+  device side have NO bytecount for FC 1–6 (response-only field) — the
+  fake-device lesson. Verified by unit tests + e2e + real-binary smoke
+  (read 0xCAFE + write echo through the box).
 - ~~B12 mbaps conformance mode~~ — **done** (role-authorization subset
   of the MODBUS/TCP Security profile on the front leg): per-device
   `mbaps:` block (`roles:` map role-name -> allowed function codes) +

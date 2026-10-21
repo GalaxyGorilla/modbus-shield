@@ -52,6 +52,9 @@ devices:
     #   roles:                   # client_ca above; see examples/mbaps.md):
     #     operator: [1, 2, 3, 4]               # reads only
     #     engineer: [1, 2, 3, 4, 5, 6, 15, 16] # reads + writes
+    # rtu_over_tcp: true         # device leg speaks bare Modbus RTU frames
+                                  # (serial-to-TCP converter without MBAP;
+                                  # the front leg stays Modbus TCP)
 
   # Second device behind the same box, unrestricted reads/writes.
   - listen_addr: ":5021"

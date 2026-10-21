@@ -54,6 +54,13 @@ type upstream struct {
 	// pacing logic.
 	lastRequest time.Time
 
+	// rtuOverTCP, when true, makes the device leg speak bare Modbus RTU
+	// frames instead of MBAP (rtu_over_tcp; B7): requests are translated
+	// MBAP ADU -> RTU frame, responses RTU frame -> MBAP ADU. The front
+	// leg stays Modbus TCP; clients notice nothing. The response's
+	// transaction ID and protocol ID are reconstructed (RTU has none).
+	rtuOverTCP bool
+
 	mu   sync.Mutex
 	conn net.Conn
 
@@ -100,6 +107,9 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64)
 	if err != nil {
 		return mbtcp.ADU{}, err
 	}
+	if u.rtuOverTCP {
+		return u.exchangeRTU(conn, req, deadline, connID)
+	}
 	if err := u.send(conn, req, deadline); err != nil {
 		u.drop(conn)
 		return mbtcp.ADU{}, fmt.Errorf("write to device: %w", err)
@@ -123,6 +133,47 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64)
 		return resp, nil
 	}
 }
+
+// exchangeRTU translates one MBAP ADU to a bare RTU frame, exchanges it
+// with the device, and translates the RTU response back to an MBAP ADU
+// (rtu_over_tcp; B7). RTU frames carry no transaction ID, so the
+// response's txn/protocol IDs are reconstructed from the request and the
+// stale-response loop reduces to CRC-verified single-frame reads — still
+// frame-safe, because a serial bridge sends each response as one burst
+// and the CRC anchors the frame boundary.
+func (u *upstream) exchangeRTU(conn net.Conn, req mbtcp.ADU, deadline time.Time, connID uint64) (mbtcp.ADU, error) {
+	rtuFrame, err := mbtcp.RTUFrame(req.Header.UnitID, req.PDU)
+	if err != nil {
+		return mbtcp.ADU{}, fmt.Errorf("rtu encode: %w", err)
+	}
+	conn.SetWriteDeadline(deadline)
+	if _, err := conn.Write(rtuFrame); err != nil {
+		u.drop(conn)
+		return mbtcp.ADU{}, fmt.Errorf("write to device: %w", err)
+	}
+	for {
+		conn.SetReadDeadline(deadline)
+		unit, pdu, err := mbtcp.ReadRTUResponse(conn, conn, rtuGap, deadline)
+		if err != nil {
+			u.drop(conn)
+			return mbtcp.ADU{}, fmt.Errorf("read from device: %w", err)
+		}
+		if unit != req.Header.UnitID {
+			// Stale frame from an earlier timed-out request (RTU has no
+			// txn-IDs; the unit address is the only correlation anchor).
+			u.log.Debugf("device %s: [conn %d] discarding stale RTU response (unit %d, want %d)",
+				u.addr, connID, unit, req.Header.UnitID)
+			u.met.IncStaleDiscard()
+			u.health.incStale()
+			continue
+		}
+		return mbtcp.NewADU(req.Header.TransactionID, unit, pdu)
+	}
+}
+
+// rtuGap is the idle-gap used by RTU reads when the exchange deadline
+// does not bound the frame first (unlisted function codes only).
+const rtuGap = 50 * time.Millisecond
 
 // ensureConn returns the current connection, dialing with bounded backoff
 // until deadline when necessary.

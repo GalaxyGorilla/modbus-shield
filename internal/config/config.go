@@ -103,6 +103,15 @@ type Device struct {
 	// (NULL role, R-23) or with an unconfigured role is denied every
 	// device request. Health reads (health_unit_id) bypass this check.
 	MBAPS *MBAPSConfig `yaml:"mbaps"`
+
+	// RTUOverTCP, when true, makes the device leg speak bare Modbus RTU
+	// frames (unit address + PDU + CRC16) instead of MBAP (B7): for
+	// cheap serial-to-TCP converters that bridge raw serial over TCP
+	// without MBAP wrapping. The front leg stays Modbus TCP — clients
+	// notice nothing; the proxy translates MBAP ADUs to RTU frames and
+	// back. Works with device_tls (the RTU bytes ride inside the TLS
+	// tunnel).
+	RTUOverTCP bool `yaml:"rtu_over_tcp"`
 }
 
 // MBAPSConfig configures the mbaps role-authorization mode (B12). The
@@ -366,6 +375,10 @@ func (d *Device) MBAPSRoleRights(role string) ([]int, bool) {
 	codes, ok := d.MBAPS.Roles[role]
 	return codes, ok
 }
+
+// HasRTUOverTCP reports whether the device leg speaks bare Modbus RTU
+// frames (rtu_over_tcp; B7).
+func (d *Device) HasRTUOverTCP() bool { return d.RTUOverTCP }
 
 // Validate checks a TLS configuration block: cert and key are
 // both-or-neither, client_ca requires cert/key, and all configured files

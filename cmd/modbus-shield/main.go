@@ -91,6 +91,7 @@ type cliFlags struct {
 	timeoutMs    *int
 	requestDelayMs *int
 	idleTimeoutMs  *int
+	rtuOverTCP     *bool
 	deviceUnitID *string
 	healthUnitID *string
 	tlsCert      *string
@@ -126,6 +127,7 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.idleTimeoutMs = fs.Int("idle-timeout-ms", 0, "close front connections idle longer than this in ms (0 = disabled)")
 	c.deviceUnitID = fs.String("device-unit-id", "", "unit ID sent upstream (serial-gateway remap; responses rewritten back)")
 	c.healthUnitID = fs.String("health-unit-id", "", "virtual unit-ID exposing proxy health registers (0-255; disabled when unset)")
+	c.rtuOverTCP = fs.Bool("rtu-over-tcp", false, "device leg speaks bare Modbus RTU frames (serial-to-TCP converter without MBAP)")
 	c.tlsCert = fs.String("tls-cert", "", "front-leg TLS server certificate (PEM; enables TLS termination)")
 	c.tlsKey = fs.String("tls-key", "", "front-leg TLS server key (PEM)")
 	c.tlsClientCA = fs.String("tls-client-ca", "", "client certificate CA (PEM; enables mTLS: clients must present a signed cert)")
@@ -164,6 +166,7 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 
 		RequestDelayMs: *c.requestDelayMs,
 		IdleTimeoutMs:  *c.idleTimeoutMs,
+		RTUOverTCP:     *c.rtuOverTCP,
 	}
 	if *c.deviceUnitID != "" {
 		u, err := strconv.ParseUint(*c.deviceUnitID, 10, 8)
