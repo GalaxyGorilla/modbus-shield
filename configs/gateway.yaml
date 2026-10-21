@@ -29,6 +29,10 @@ devices:
     #   cert: server.crt         # stays plain; see examples/tls.md)
     #   key: server.key
     #   client_ca: ca.crt        # uncomment for mTLS (required client certs)
+    # health_unit_id: 200        # optional: the proxy answers requests to
+                                  # this virtual unit-ID itself with readable
+                                  # health registers (uptime, upstream state,
+                                  # counters; see examples/health.md)
     # device_tls:                # secure the UPSTREAM leg instead (two-proxy
     #   ca_cert: ca.crt          # secured line; the far side is a second
     #   server_name: farbox      # gateway with a tls: block; see

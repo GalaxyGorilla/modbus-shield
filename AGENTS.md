@@ -39,7 +39,7 @@ serial ports.
 | Transport level | Parse the 7-byte MBAP header, forward the PDU as an **opaque blob** — vendor register-map/encoding chaos flows through untouched |
 | Correlation posture | **Strict on framing, liberal on correlation** — real devices deviate (wonky txn-ID echo, unit-ID swaps) |
 | Config | YAML per instance + no-YAML flags one-liner mode (field techs paste two lines) |
-| Ground truth | Modbus Organization spec PDFs, NOT RFCs (none exist): MODBUS Application Protocol Specification V1.1b3 (Apr 2012) + MODBUS Messaging on TCP/IP Implementation Guide V1.0b |
+| Ground truth | Modbus Organization spec PDFs, NOT RFCs (none exist): MODBUS Application Protocol Specification V1.1b3 (Apr 2012) + MODBUS Messaging on TCP/IP Implementation Guide V1.0b. For security: MODBUS/TCP Security Protocol Specification MB-TCP-Security-v36 (2021-07-30) — the "mbaps" profile (port 802, mandatory mutual TLS, role-OID AuthZ). Our TLS legs are wire-compatible with it; full mbaps conformance (mandatory mTLS + role-based AuthZ) is a possible future mode, NOT adopted in v1 because retrofit clients/devices don't speak it |
 
 ## 3. Status / Roadmap
 
@@ -310,6 +310,18 @@ or set `-timeout` on `go test` (network tests would hang without one).
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,
   unit-ID semantics); be strict on framing, liberal on correlation.
+- **MODBUS/TCP Security ("mbaps", MB-TCP-Security-v36, 2021-07-30)**:
+  the Modbus Organization's security profile — MBAP ADU encapsulated in
+  TLS on **port 802** (IANA mbap/TLS/TCP), TLS 1.2 minimum (R-01/R-34),
+  **mandatory mutual** X.509 auth (R-02/R-06/R-44), role-based AuthZ via
+  the registered OID 1.3.6.1.4.1.50316.802.1 in the client cert
+  (R-21/R-22, ASN1 UTF8String), AuthZ checked on **every request**,
+  rejection = exception 0x01 Illegal Function (R-31), no change to mbap
+  (R-05), TLS-PSK deliberately unused. modbus-shield's TLS legs are
+  wire-compatible (TLS 1.2 min, stdlib X.509, PDU opaque); full mbaps
+  conformance (mandatory mTLS + role AuthZ) is a possible future mode,
+  NOT v1 — retrofit clients/devices don't speak mbaps, which is exactly
+  why the box speaks plain Modbus TCP to both ends.
 - **Vendor chaos stays out of the proxy**: register maps, word-swap
   encodings, data types are client↔device concerns; the PDU is opaque.
 - **Multiplexing is the hard part** — the reference implementation
