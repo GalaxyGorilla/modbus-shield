@@ -43,26 +43,27 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 5 — observability complete. `internal/observ`:
-zap logger (console/json from config), Prometheus metric set
-(connections accepted/rejected, requests by device × outcome
-[forwarded / exception_device / exception_policy / exception_rate],
-upstream errors, stale discards, reconnects, device_up gauges, per-device
-latency histograms), zap-agnostic `proxy.Metrics` interface injected into
-the gateway/upstream (nil-safe `nopMetrics` fallback). E2E metric
-assertions in `metrics_test.go` (5 tests) + observ unit tests. Full
-suite green under `-race`; staticcheck + govulncheck clean.**
+**Current state: milestone 6 — CLI complete. `cmd/modbus-shield`:
+`gateway` (YAML --config or full direct-flags mode, runs until
+SIGINT/SIGTERM with graceful `Runner.Stop`, metrics server wired via
+--metrics-addr or config metrics_listen), `validate` (pre-apply check,
+--json report), `selftest` (validate + real FC3 Modbus read probe
+directly to each configured device — an exception response still proves
+liveness; 2 attempts; --probe=false skips the network), `genpsk`,
+`version`. Config flags mode landed here (single-device Config from
+flags). Full suite green under `-race`; staticcheck + govulncheck
+clean; selftest smoke-verified against a live fake device.**
 
 | Milestone | Status |
 |---|---|
 | Scaffold: dirs, go.mod, .gitignore, Makefile, AGENTS.md, BACKLOG.md | done |
 | `internal/mbtcp`: MBAP header build/parse (single parser, fuzz-ready), ADU cap, unit-ID types | done |
-| `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | YAML done (flags mode lands with the CLI milestone) |
+| `internal/config`: YAML + flags, multi-device entries, ACL/policy config, validation | done (YAML + single-device flags mode) |
 | Gateway core: listener, per-client lock-step loop, upstream conn + reconnect/backoff, stale-response discard | done |
 | Multiplexing + fairness + backpressure (goroutine-leak regression test) | done |
 | ACLs + read-only policy + shielding limits (conn cap, rate limit) | done (all: read-only, conn cap, rate limit) |
 | Observability (Prometheus + zap) | done |
-| CLI: `validate` / `selftest` / flags mode / `version` | pending |
+| CLI: `validate` / `selftest` / flags mode / `version` | done (gateway/validate/selftest/genpsk/version) |
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | pending |
 | Docs: README (why/deployment shapes/decision guidance), examples, systemd units | pending |
 
@@ -82,7 +83,7 @@ suite green under `-race`; staticcheck + govulncheck clean.**
 ```
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP header build/parse (mbtcp.go, fuzz_test.go + unit tests)
-internal/config/           YAML config (config.go + tests); flags overrides land with CLI
+internal/config/           YAML config + single-device flags mode (config.go + tests)
 internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go + fakedevice e2e
 internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
@@ -137,7 +138,7 @@ or set `-timeout` on `go test` (network tests would hang without one).
 - `gopkg.in/yaml.v3 v3.0.1` (milestone 2; govulncheck-clean)
 - `github.com/prometheus/client_golang v1.23.2` (milestone 5; govulncheck-clean)
 - `go.uber.org/zap v1.27.0` (milestone 5; govulncheck-clean)
-- planned: `spf13/pflag`
+- `github.com/spf13/pflag v1.0.10` (milestone 6 CLI; snmp-shield-pinned)
 - Modbus protocol handling is implemented in-house on `encoding/binary`
   (full parser control for fuzzability); a client lib (e.g. grid-x/modbus)
   is only considered for the `selftest` probe — to be decided at that
@@ -242,6 +243,17 @@ or set `-timeout` on `go test` (network tests would hang without one).
   signature exactly); do NOT wrap it again (infinite recursion risk).
   Never name a struct field after a method you also delegate (`Debugf`
   field + `Debugf` method = recursion).
+- **CLI contract** (cmd/modbus-shield): every subcommand registers the
+  same flag set (role flags never trip unknown-flag errors on
+  validate/selftest). `--config` XOR direct flags; direct flags build a
+  single-device `config.Device` + `cfg.Defaults()` + `cfg.Validate()`.
+  `probeDevice` (selftest) builds the FC3 probe on `internal/mbtcp`
+  directly (unit = device_unit_id remap or 1) — no client library. An
+  exception response PASSES the probe with a note (device answered on
+  the wire = alive); only dial/read/txn-mismatch fail. `gateway` holds
+  `*http.Server` for metrics in a plain local var; nil-safe
+  `ShutdownMetrics(nil)`. Tests set flag values through the flag
+  pointers (exactly as pflag Parse would), never via reflection.
 - **No RFCs exist for Modbus** — the spec PDFs above are the only ground
   truth, and there is no conformance suite: our adversarial test suite +
   mbpoll interop is the anchor. Real devices deviate (wonky txn-ID echo,
