@@ -1,0 +1,46 @@
+# systemd unit — modbus-shield gateway instance (retrofit box).
+# Install: cp deploy/modbus-shield-gateway.service /etc/systemd/system/
+#          systemctl daemon-reload && systemctl enable --now modbus-shield-gateway
+#
+# The gateway is a single box in front of the legacy device: it multiplexes
+# all clients onto one device connection and enforces ACLs, read-only and
+# shielding limits. Config from /etc/modbus-shield/gateway.yaml
+# (see configs/gateway.yaml). The device-side wire stays plain Modbus TCP.
+
+[Unit]
+Description=Modbus TCP retrofit security proxy (gateway)
+Documentation=https://github.com/GalaxyGorilla/modbus-shield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/modbus-shield gateway --config /etc/modbus-shield/gateway.yaml
+Restart=on-failure
+RestartSec=5
+
+ConfigurationDirectory=modbus-shield
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+User=modbus-shield
+Group=modbus-shield
+
+[Install]
+WantedBy=multi-user.target

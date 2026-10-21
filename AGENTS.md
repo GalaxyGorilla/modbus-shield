@@ -43,14 +43,13 @@ serial ports.
 
 ## 3. Status / Roadmap
 
-**Current state: milestone 7 — fuzz + interop complete. `internal/mbtcp`
-has two fuzz targets (FuzzParseADU + FuzzReadADU streaming) with committed
-regression corpora re-run in every `go test`; `scripts/interop-modbus.sh`
-drives the gateway with real mbpoll (FC3/FC4 reads, FC6 write, exception
-pass-through, unit-ID addressing, 8 concurrent clients) — PASS rc=0 on
-this box (mbpoll not preinstalled; exit 77 = skip). Graceful-shutdown fix:
-`Serve` now returns nil on `net.ErrClosed` so SIGTERM exits silently.
-Full suite green under `-race`; staticcheck + govulncheck clean.**
+**Current state: v1 feature-complete — all milestones done. Docs
+milestone landed: README (mission/why, decision guidance naming
+modbus-proxy/VPN alternatives, feature + metrics tables, appliance
+deployment), examples/gateway.md walkthrough, deploy/
+modbus-shield-gateway.service (hardened systemd unit), `make interop`
+target. Full suite green under `-race`; staticcheck + govulncheck
+clean; interop PASS rc=0.**
 
 | Milestone | Status |
 |---|---|
@@ -63,7 +62,7 @@ Full suite green under `-race`; staticcheck + govulncheck clean.**
 | Observability (Prometheus + zap) | done |
 | CLI: `validate` / `selftest` / flags mode / `version` | done (gateway/validate/selftest/genpsk/version) |
 | Fuzzing (`internal/mbtcp` targets + regression corpus) + mbpoll interop script | done (FuzzParseADU + FuzzReadADU, corpora committed; interop PASS rc=0) |
-| Docs: README (why/deployment shapes/decision guidance), examples, systemd units | pending |
+| Docs: README (why/deployment shapes/decision guidance), examples, systemd units | done (README + examples/gateway.md + deploy unit + make interop) |
 
 ### Verification targets (from the plan)
 
@@ -91,8 +90,8 @@ deploy/                    hardened systemd unit files
 examples/                  copy-paste deployment walkthroughs
 ```
 
-(Planned; directories are created as milestones land. Empty for now:
-internal/*, configs/, scripts/, deploy/, examples/.)
+(All directories populated as of v1 feature-complete; see individual
+milestone sections above for file inventories.)
 
 ## 5. Build / Test
 
@@ -107,7 +106,9 @@ go test ./... -race -timeout 180s
 
 `make build` / `make test` / `make vet` / `make release` wrap the same
 commands (`release` = stripped static binary, `CGO_ENABLED=0
--trimpath -ldflags "-s -w"`, for appliance deployment).
+-trimpath -ldflags "-s -w"`, for appliance deployment). `make interop`
+runs the real-client mbpoll interop suite (exit 77 = skip when mbpoll
+is missing; see the Interop design note).
 
 **Static analysis** (installed in `~/go/bin`, run after every dependency
 change or parser edit — pragmatic: fix only meaningful findings):

@@ -5,7 +5,7 @@
 BINARY := modbus-shield
 GO     ?= go
 
-.PHONY: all build test vet staticcheck govulncheck race release sbom vulnscan clean
+.PHONY: all build test vet staticcheck govulncheck race interop release sbom vulnscan clean
 
 all: build
 
@@ -25,6 +25,12 @@ govulncheck:
 	~/go/bin/govulncheck ./...
 
 race: test
+
+# interop drives the built gateway with the real mbpoll client against a
+# fake device (reads, writes, exception pass-through, unit-ID addressing,
+# concurrent clients). Exit 77 when mbpoll is missing.
+interop: build
+	@MBPOLL_BIN="$${MBPOLL_BIN:-mbpoll}" sh scripts/interop-modbus.sh
 
 # release builds a stripped static binary for appliance deployment.
 release:
