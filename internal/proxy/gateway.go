@@ -40,6 +40,14 @@ type gateway struct {
 
 	// met is the observability hook; never nil (normalized to a no-op).
 	met Metrics
+
+	// health exposes the box's state as readable registers on a virtual
+	// unit-ID (B4); nil when disabled.
+	health *healthRegistry
+
+	// healthUnitID is the virtual unit-ID health requests are addressed
+	// to (only meaningful when health != nil).
+	healthUnitID uint8
 }
 
 func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
@@ -61,17 +69,25 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 			return nil, fmt.Errorf("device %s: %w", dev.Name, err)
 		}
 	}
+	var health *healthRegistry
+	var healthUnitID uint8
+	if dev.HasHealth() {
+		health = newHealthRegistry()
+		healthUnitID = dev.HealthUnitIDValue()
+	}
 	up := newUpstream(dev.DeviceAddr, dev.Name, log, met)
 	up.tlsDial = devTLS
-	return &gateway{
-		dev:        dev,
-		up:         up,
-		log:        log,
-		allow:      allow,
-		maxClients: int64(dev.MaxClients),
-		lim:        newRateLimiter(dev.RatePerSec),
-		tlsCfg:     tlsCfg,
-		met:        metricsOrNop(met),
+	up.setUpstreamHealth(health)
+	return &gateway{		dev:          dev,
+		up:           up,
+		log:          log,
+		allow:        allow,
+		maxClients:   int64(dev.MaxClients),
+		lim:          newRateLimiter(dev.RatePerSec),
+		tlsCfg:       tlsCfg,
+		met:          metricsOrNop(met),
+		health:       health,
+		healthUnitID: healthUnitID,
 	}, nil
 }
 
@@ -96,9 +112,11 @@ func (g *gateway) Serve(ln net.Listener) error {
 		}
 		if !g.admit(conn) {
 			g.met.IncConnRejected()
+			g.health.incConnRejected()
 			continue
 		}
 		g.met.IncConnAccepted()
+		g.health.incConnAccepted()
 		go func() {
 			defer g.clients.Add(-1)
 			g.handleClient(conn)
@@ -160,11 +178,20 @@ func (g *gateway) handleClient(conn net.Conn) {
 func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 	clientUnit := req.Header.UnitID
 
+	// Health endpoint: requests addressed to the virtual health unit-ID
+	// are answered by the proxy itself (B4) — before policy and rate
+	// limiting, so monitoring stays responsive during a shielding event.
+	if g.health != nil && clientUnit == g.healthUnitID {
+		g.log.Debugf("gateway %s: %s: serving health unit %d", g.dev.Name, conn.RemoteAddr(), g.healthUnitID)
+		return g.serveHealth(req)
+	}
+
 	// Read-only policy: reject writes locally; the device never sees them.
 	if g.dev.ReadOnly && acl.IsWrite(req.FunctionCode()) {
 		g.log.Infof("gateway %s: %s: blocked write FC %d (read-only)",
 			g.dev.Name, conn.RemoteAddr(), req.FunctionCode())
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionPolicy)
+		g.health.incPolicy()
 		return g.exception(req, clientUnit, mbtcp.ExceptionIllegalFunction)
 	}
 
@@ -174,6 +201,7 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 		g.log.Warnf("gateway %s: %s: rate limit (%d/s) exceeded, FC %d rejected",
 			g.dev.Name, conn.RemoteAddr(), g.dev.RatePerSec, req.FunctionCode())
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
+		g.health.incRate()
 		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
 	}
 
@@ -190,9 +218,12 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU) mbtcp.ADU {
 			g.dev.Name, conn.RemoteAddr(), err)
 		g.met.IncUpstreamError()
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionDevice)
+		g.health.incUpstreamError()
+		g.health.incDeviceErr()
 		return g.exception(req, clientUnit, mbtcp.ExceptionGatewayTargetFail)
 	}
 	g.met.ObserveRequest(g.dev.Name, outcomeForwarded)
+	g.health.incForwarded()
 	if g.dev.HasUnitRemap() {
 		resp.Header.UnitID = clientUnit
 	}

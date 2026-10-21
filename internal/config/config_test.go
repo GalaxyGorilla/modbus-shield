@@ -401,3 +401,35 @@ devices:
 		})
 	}
 }
+
+func TestHealthUnitIDParsing(t *testing.T) {
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+    health_unit_id: 200
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasHealth() {
+		t.Fatal("HasHealth = false")
+	}
+	if d.HealthUnitIDValue() != 200 {
+		t.Fatalf("HealthUnitIDValue = %d, want 200", d.HealthUnitIDValue())
+	}
+
+	// Disabled when unset.
+	cfg, err = Parse([]byte(`
+devices:
+  - listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.Devices[0].HasHealth() {
+		t.Fatal("HasHealth = true without health_unit_id")
+	}
+}

@@ -41,10 +41,20 @@ type upstream struct {
 
 	mu   sync.Mutex
 	conn net.Conn
+
+	// health mirrors reconnect/stale counters into the B4 health
+	// registry; nil-safe.
+	health *healthRegistry
 }
 
 func newUpstream(addr, name string, log Logger, met Metrics) *upstream {
 	return &upstream{addr: addr, name: name, log: log, met: metricsOrNop(met)}
+}
+
+// setUpstreamHealth wires the B4 health registry into the upstream so
+// reconnect/stale counters mirror into the health registers.
+func (u *upstream) setUpstreamHealth(h *healthRegistry) {
+	u.health = h
 }
 
 // exchange forwards req to the device and returns the matching response.
@@ -75,6 +85,7 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration) (mbtcp.ADU, er
 			u.log.Debugf("device %s: discarding stale response (txn %d, want %d)",
 				u.addr, resp.Header.TransactionID, req.Header.TransactionID)
 			u.met.IncStaleDiscard()
+			u.health.incStale()
 			continue
 		}
 		return resp, nil
@@ -112,6 +123,7 @@ func (u *upstream) ensureConn(deadline time.Time) (net.Conn, error) {
 			u.conn = conn
 			u.met.IncReconnect()
 			u.met.SetDeviceUp(u.name, true)
+			u.health.incReconnect()
 			u.log.Debugf("device %s: connected (tls=%v)", u.addr, u.tlsDial != nil)
 			return conn, nil
 		}
@@ -141,6 +153,13 @@ func (u *upstream) drop(conn net.Conn) {
 	conn.Close()
 	u.met.SetDeviceUp(u.name, false)
 	u.log.Debugf("device %s: connection dropped", u.addr)
+}
+
+// up reports whether the device connection is currently established.
+func (u *upstream) up() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.conn != nil
 }
 
 // close shuts the device connection down (idempotent).

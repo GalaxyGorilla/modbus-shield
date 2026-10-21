@@ -88,6 +88,7 @@ type cliFlags struct {
 	ratePerSec   *int
 	timeoutMs    *int
 	deviceUnitID *string
+	healthUnitID *string
 	tlsCert      *string
 	tlsKey       *string
 	tlsClientCA  *string
@@ -116,6 +117,7 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.ratePerSec = fs.Int("rate-per-sec", 0, "max accepted requests per second (0 = unlimited)")
 	c.timeoutMs = fs.Int("timeout-ms", 0, "per-request upstream deadline in ms (0 = default 5000)")
 	c.deviceUnitID = fs.String("device-unit-id", "", "unit ID sent upstream (serial-gateway remap; responses rewritten back)")
+	c.healthUnitID = fs.String("health-unit-id", "", "virtual unit-ID exposing proxy health registers (0-255; disabled when unset)")
 	c.tlsCert = fs.String("tls-cert", "", "front-leg TLS server certificate (PEM; enables TLS termination)")
 	c.tlsKey = fs.String("tls-key", "", "front-leg TLS server key (PEM)")
 	c.tlsClientCA = fs.String("tls-client-ca", "", "client certificate CA (PEM; enables mTLS: clients must present a signed cert)")
@@ -156,6 +158,14 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 		}
 		id := uint8(u)
 		dev.DeviceUnitID = &id
+	}
+	if *c.healthUnitID != "" {
+		u, err := strconv.ParseUint(*c.healthUnitID, 10, 8)
+		if err != nil {
+			return nil, fmt.Errorf("--health-unit-id must be 0-255, got %q", *c.healthUnitID)
+		}
+		id := uint8(u)
+		dev.HealthUnitID = &id
 	}
 	if *c.tlsCert != "" || *c.tlsKey != "" || *c.tlsClientCA != "" {
 		dev.TLS = &config.TLSConfig{
@@ -478,6 +488,7 @@ Usage (flags, no config file — plug and play):
   modbus-shield gateway --listen <ip:port> --device <legacy-device:port> \
       [--read-only] [--allow <ip|cidr>]... [--max-clients <n>] \
       [--rate-per-sec <n>] [--timeout-ms <ms>] [--device-unit-id <id>] \
+      [--health-unit-id <id>] \
       [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]] \
       [--device-tls-ca <pem> [--device-tls-server-name <name>] \
        [--device-tls-cert <pem> --device-tls-key <pem>]] \
@@ -493,7 +504,10 @@ With --device-tls-* the upstream leg is secured instead: the box dials
 the device over TLS — the far side is a second modbus-shield gateway
 whose front leg terminates TLS in front of the local device (two-proxy
 secured line). Plain Modbus TCP on both end wires — the device notices
-nothing.
+nothing. With --health-unit-id the proxy answers requests to that virtual
+unit-ID itself with readable health registers (uptime, upstream state,
+counters) — plant SCADA monitors the box with the Modbus tooling it
+already has.
 
 Other commands:
   modbus-shield validate [--config <file> | same flags as gateway] [--json]

@@ -66,6 +66,15 @@ type Device struct {
 	// device. CACert verifies the far box's certificate (empty = system
 	// roots); Cert/Key present a client certificate for mTLS.
 	DeviceTLS *DeviceTLSConfig `yaml:"device_tls"`
+
+	// HealthUnitID, when set, enables the health-via-Modbus endpoint
+	// (B4): requests addressed to this virtual unit-ID are answered by
+	// the proxy itself with readable health registers (uptime, upstream
+	// state, counters) — the device never sees them. Health reads bypass
+	// read-only policy and the rate limiter so monitoring stays
+	// responsive during a shielding event; the allow-list and connection
+	// cap still apply.
+	HealthUnitID *uint8 `yaml:"health_unit_id"`
 }
 
 // TLSConfig configures front-leg TLS termination for a device.
@@ -255,6 +264,14 @@ func (d *Device) HasClientCA() bool { return d.HasTLS() && d.TLS.ClientCA != "" 
 // HasDeviceTLS reports whether the upstream (device-side) TLS leg is
 // configured: the box dials the device over TLS (two-proxy secured line).
 func (d *Device) HasDeviceTLS() bool { return d.DeviceTLS != nil }
+
+// HasHealth reports whether the health-via-Modbus endpoint (B4) is
+// enabled via health_unit_id.
+func (d *Device) HasHealth() bool { return d.HealthUnitID != nil }
+
+// HealthUnitIDValue returns the virtual health unit-ID (call only when
+// HasHealth() is true).
+func (d *Device) HealthUnitIDValue() uint8 { return *d.HealthUnitID }
 
 // Validate checks a TLS configuration block: cert and key are
 // both-or-neither, client_ca requires cert/key, and all configured files
