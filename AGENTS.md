@@ -130,7 +130,11 @@ go test ./... -race -timeout 180s
 
 `make build` / `make test` / `make vet` / `make release` wrap the same
 commands (`release` = stripped static binary, `CGO_ENABLED=0
--trimpath -ldflags "-s -w"`, for appliance deployment). `make interop`
+-trimpath -ldflags "-s -w"`, for appliance deployment). `make release-all`
+cross-builds stripped static binaries for all appliance platforms into
+`dist/`: `linux-amd64`, `linux-arm64`, `linux-armv7` (pure Go + CGO
+disabled = cross-compiling is exact; verified: all three build and the
+amd64 binary runs). `make interop`
 runs the real-client mbpoll interop suite (exit 77 = skip when mbpoll
 is missing; see the Interop design note).
 

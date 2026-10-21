@@ -223,6 +223,9 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
 
 - **Static binary** — `make release` produces a stripped, cgo-free
   static binary suitable for any Linux appliance (Pi, DIN-rail SBC).
+- **Cross-builds** — `make release-all` produces stripped static binaries
+  for all appliance platforms into `dist/`: `linux-amd64`, `linux-arm64`,
+  `linux-armv7`. Pure Go with CGO disabled — cross-compiling is exact.
 - **systemd unit** — [`deploy/`](deploy/) ships a hardened unit file
   (`Type=notify`, `WatchdogSec=30`, `Restart=on-failure`,
   `ProtectSystem=strict`, `CAP_NET_BIND_SERVICE` for privileged ports).
