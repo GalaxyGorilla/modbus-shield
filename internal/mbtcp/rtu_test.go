@@ -50,16 +50,16 @@ func TestCRC16KnownAnswers(t *testing.T) {
 // ReadRTUResponse across all shape classes; PDU and unit must survive.
 func TestRTUFrameRoundTrip(t *testing.T) {
 	pdus := [][]byte{
-		{3, 2, 0xCA, 0xFE},        // byte-count shape (FC3 response)
-		{1, 1, 1},                 // byte-count (FC1)
-		{2, 1, 0},                 // byte-count (FC2)
-		{4, 2, 0x12, 0x34},        // byte-count (FC4)
-		{23, 2, 0x01, 0x02},       // byte-count (FC23)
+		{3, 2, 0xCA, 0xFE},           // byte-count shape (FC3 response)
+		{1, 1, 1},                    // byte-count (FC1)
+		{2, 1, 0},                    // byte-count (FC2)
+		{4, 2, 0x12, 0x34},           // byte-count (FC4)
+		{23, 2, 0x01, 0x02},          // byte-count (FC23)
 		{6, 0x01, 0x00, 0x00, 0x2A},  // fixed echo (FC6): addr + value
 		{5, 0x01, 0x00, 0xFF, 0x00},  // fixed echo (FC5): addr + value
 		{16, 0x00, 0x01, 0x00, 0x02}, // fixed echo (FC16)
 		{15, 0x00, 0x01, 0x00, 0x02}, // fixed echo (FC15)
-		{22, 0, 1, 0, 2, 0, 3},    // mask write (FC22)
+		{22, 0, 1, 0, 2, 0, 3},       // mask write (FC22)
 	}
 	for _, pdu := range pdus {
 		f, err := RTUFrame(17, pdu)

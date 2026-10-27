@@ -69,16 +69,56 @@ func newHealthRegistry() *healthRegistry {
 	return &healthRegistry{start: time.Now()}
 }
 
-func (h *healthRegistry) incConnAccepted()  { if h != nil { h.connAccepted.add(1) } }
-func (h *healthRegistry) incConnRejected()  { if h != nil { h.connRejected.add(1) } }
-func (h *healthRegistry) incForwarded()     { if h != nil { h.reqForwarded.add(1) } }
-func (h *healthRegistry) incDeviceErr()     { if h != nil { h.reqDevice.add(1) } }
-func (h *healthRegistry) incPolicy()        { if h != nil { h.reqPolicy.add(1) } }
-func (h *healthRegistry) incRate()          { if h != nil { h.reqRate.add(1) } }
-func (h *healthRegistry) incUpstreamError() { if h != nil { h.upstreamErrs.add(1) } }
-func (h *healthRegistry) incStale()         { if h != nil { h.staleDiscards.add(1) } }
-func (h *healthRegistry) incReconnect()     { if h != nil { h.reconnects.add(1) } }
-func (h *healthRegistry) incCacheHit()      { if h != nil { h.cacheHits.add(1) } }
+func (h *healthRegistry) incConnAccepted() {
+	if h != nil {
+		h.connAccepted.add(1)
+	}
+}
+func (h *healthRegistry) incConnRejected() {
+	if h != nil {
+		h.connRejected.add(1)
+	}
+}
+func (h *healthRegistry) incForwarded() {
+	if h != nil {
+		h.reqForwarded.add(1)
+	}
+}
+func (h *healthRegistry) incDeviceErr() {
+	if h != nil {
+		h.reqDevice.add(1)
+	}
+}
+func (h *healthRegistry) incPolicy() {
+	if h != nil {
+		h.reqPolicy.add(1)
+	}
+}
+func (h *healthRegistry) incRate() {
+	if h != nil {
+		h.reqRate.add(1)
+	}
+}
+func (h *healthRegistry) incUpstreamError() {
+	if h != nil {
+		h.upstreamErrs.add(1)
+	}
+}
+func (h *healthRegistry) incStale() {
+	if h != nil {
+		h.staleDiscards.add(1)
+	}
+}
+func (h *healthRegistry) incReconnect() {
+	if h != nil {
+		h.reconnects.add(1)
+	}
+}
+func (h *healthRegistry) incCacheHit() {
+	if h != nil {
+		h.cacheHits.add(1)
+	}
+}
 
 // serveHealth answers one request addressed to the health unit-ID.
 // Only FC3 (read holding) and FC4 (read input) are valid; both return

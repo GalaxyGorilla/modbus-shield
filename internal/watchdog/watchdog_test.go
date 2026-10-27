@@ -8,13 +8,39 @@ import (
 	"time"
 )
 
+// shortTempDir returns a temp directory whose path still fits in a Unix
+// socket address. t.TempDir() is unusable for that on macOS: TMPDIR lives
+// under /var/folders/... and the resulting sun_path exceeds the 104-byte
+// (macOS/BSD) kernel limit, so bind fails with EINVAL. Short system temp
+// roots are tried first; the test skips if none is short enough.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	const maxSunPath = 100 // conservative: macOS limits sun_path to 104 bytes
+	for _, base := range []string{"/tmp", os.TempDir()} {
+		if base == "" {
+			continue
+		}
+		dir, err := os.MkdirTemp(base, "wd")
+		if err != nil {
+			continue
+		}
+		if len(dir)+len("/notify.sock") >= maxSunPath {
+			os.RemoveAll(dir)
+			continue
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		return dir
+	}
+	t.Skip("no temp directory short enough for a Unix socket path")
+	return "" // unreachable
+}
+
 // startFakeSystemd starts a Unix-socket fake of systemd's NOTIFY_SOCKET
 // and returns the socket path plus a channel delivering every received
 // state string.
 func startFakeSystemd(t *testing.T) (string, <-chan string) {
 	t.Helper()
-	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "notify.sock")
+	sockPath := filepath.Join(shortTempDir(t), "notify.sock")
 	ln, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sockPath, Net: "unixgram"})
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
