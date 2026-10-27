@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,8 +33,30 @@ type gateway struct {
 	clients    atomic.Int64
 
 	// lim enforces rate_per_sec on the front leg (shielding); nil when
-	// rate_per_sec is 0 (unlimited).
+	// rate_per_sec is 0 (unlimited). It is a SHARED bucket: it caps total
+	// device traffic. Per-client fairness (one noisy client must not eat
+	// everyone's budget) is the separate per-client bucket created in
+	// handleClient from rate_per_client_per_sec.
 	lim *rateLimiter
+
+	// clientLimRate is the per-connection request rate (0 = unlimited),
+	// materialized as one rateLimiter per client connection. It bounds a
+	// single poller so it cannot consume the shared budget of the others.
+	clientLimRate int
+
+	// wg tracks client handler goroutines so Stop can drain in-flight
+	// requests instead of cutting responses off mid-write.
+	wg sync.WaitGroup
+
+	// inFlight counts requests currently being served (exchange + write),
+	// so drain() knows when the last response has been sent.
+	inFlight atomic.Int64
+
+	// connsMu guards conns: the live front-leg connections, so a shutdown
+	// that outlives the drain grace period can force them closed instead
+	// of leaving goroutines parked in read forever.
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
 
 	// tlsCfg terminates TLS on the front leg when set (nil = plain TCP).
 	tlsCfg *tls.Config
@@ -103,6 +126,7 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 	up.tlsDial = devTLS
 	up.requestDelay = dev.RequestDelay()
 	up.rtuOverTCP = dev.HasRTUOverTCP()
+	up.lenient = dev.HasLenientCorrelation()
 	up.setUpstreamHealth(health)
 	if dev.HasTransparent() {
 		// B3: the upstream target is the client's original destination
@@ -110,18 +134,20 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		up.origDST = originalDST
 	}
 	g := &gateway{
-		dev:          dev,
-		up:           up,
-		log:          log,
-		allow:        allow,
-		maxClients:   int64(dev.MaxClients),
-		cache:        newReadCache(dev.ReadCacheTTL()),
-		lim:          newRateLimiter(dev.RatePerSec),
-		tlsCfg:       tlsCfg,
-		met:          metricsOrNop(met),
-		health:       health,
-		healthUnitID: healthUnitID,
-		mbaps:        mbaps,
+		dev:           dev,
+		up:            up,
+		log:           log,
+		allow:         allow,
+		maxClients:    int64(dev.MaxClients),
+		cache:         newReadCache(dev.ReadCacheTTL()),
+		lim:           newRateLimiter(dev.RatePerSec),
+		clientLimRate: dev.RatePerClientPerSec,
+		tlsCfg:        tlsCfg,
+		met:           metricsOrNop(met),
+		health:        health,
+		healthUnitID:  healthUnitID,
+		mbaps:         mbaps,
+		conns:         make(map[net.Conn]struct{}),
 	}
 	up.connSeq = &g.connSeq
 	return g, nil
@@ -153,7 +179,11 @@ func (g *gateway) Serve(ln net.Listener) error {
 		}
 		g.met.IncConnAccepted()
 		g.health.incConnAccepted()
+		g.trackConn(conn, true)
+		g.wg.Add(1)
 		go func() {
+			defer g.wg.Done()
+			defer g.trackConn(conn, false)
 			defer g.clients.Add(-1)
 			g.handleClient(conn)
 		}()
@@ -187,6 +217,50 @@ func (g *gateway) admit(conn net.Conn) bool {
 	return true
 }
 
+// trackConn adds/removes a live front-leg connection from the shutdown
+// set (see drain).
+func (g *gateway) trackConn(conn net.Conn, add bool) {
+	g.connsMu.Lock()
+	defer g.connsMu.Unlock()
+	if add {
+		g.conns[conn] = struct{}{}
+	} else {
+		delete(g.conns, conn)
+	}
+}
+
+// drain waits (up to grace) for in-flight exchanges to finish so a
+// shutdown does not cut a response off mid-write, then closes the
+// remaining client connections — handlers parked in a read waiting for
+// the next request never finish on their own, and a poller that sees EOF
+// simply reconnects. Always terminates: a handler that is still busy
+// after the grace period is closed out with the rest.
+func (g *gateway) drain(grace time.Duration) {
+	deadline := time.Now().Add(grace)
+	for g.inFlight.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if n := g.inFlight.Load(); n > 0 {
+		g.log.Warnf("gateway %s: shutdown drain grace (%v) expired with %d request(s) in flight",
+			g.dev.Name, grace, n)
+	}
+	g.closeConns()
+	g.wg.Wait()
+}
+
+// closeConns closes every tracked client connection (shutdown path).
+func (g *gateway) closeConns() {
+	g.connsMu.Lock()
+	conns := make([]net.Conn, 0, len(g.conns))
+	for c := range g.conns {
+		conns = append(conns, c)
+	}
+	g.connsMu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
+}
+
 // handleClient runs the per-client lock-step loop: read one request,
 // forward it upstream, write one response. Any client-side error ends the
 // connection; upstream errors are converted to Modbus gateway exceptions
@@ -198,6 +272,11 @@ func (g *gateway) handleClient(conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr()
 	connID := g.connSeq.Add(1) // B9: correlate client + device log lines
+
+	// Per-CLIENT rate bucket (rate_per_client_per_sec): one poller must
+	// not be able to spend the shared budget of everyone else. nil when
+	// unset (nil-guarded like the shared limiter).
+	clientLim := newRateLimiter(g.clientLimRate)
 
 	// B12: in mbaps mode the client's role comes from its certificate.
 	// mTLS is mandatory in this mode (config validation enforces
@@ -252,8 +331,11 @@ func (g *gateway) handleClient(conn net.Conn) {
 			return
 		}
 
-		resp := g.serve(conn, req, connID, mbapsRights)
-		if err := writeADU(conn, resp); err != nil {
+		g.inFlight.Add(1)
+		resp := g.serve(conn, req, connID, mbapsRights, clientLim)
+		err = writeADU(conn, resp)
+		g.inFlight.Add(-1)
+		if err != nil {
 			g.log.Debugf("gateway %s: [conn %d] %s: write failed: %v",
 				g.dev.Name, connID, remote, err)
 			return
@@ -264,8 +346,10 @@ func (g *gateway) handleClient(conn net.Conn) {
 // serve processes one request and returns the response to send back to
 // the client (never touches conn). connID is the B9 connection ID for
 // log correlation; mbapsRights is the connection role's allowed function
-// code set (B12; nil = deny every device request, NULL role).
-func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights map[uint8]bool) mbtcp.ADU {
+// code set (B12; nil = deny every device request, NULL role). clientLim
+// is this connection's own rate bucket (rate_per_client_per_sec; nil =
+// unlimited).
+func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights map[uint8]bool, clientLim *rateLimiter) mbtcp.ADU {
 	clientUnit := req.Header.UnitID
 
 	// Health endpoint: requests addressed to the virtual health unit-ID
@@ -300,7 +384,19 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 	}
 
 	// Rate limiting: shield the device from polling storms. Rejected
-	// requests get Server Device Busy and the device never sees them.
+	// requests get Server Device Busy and the device never sees them. The
+	// PER-CLIENT bucket is checked first: a client over its own limit must
+	// not charge the SHARED budget (otherwise one runaway poller would
+	// drain everyone else's tokens by being rejected). Both buckets are
+	// consumed only on admission, and a request is admitted only if both
+	// allow it.
+	if clientLim != nil && !clientLim.Allow() {
+		g.log.Warnf("gateway %s: [conn %d] %s: per-client rate limit (%d/s) exceeded, FC %d rejected",
+			g.dev.Name, connID, conn.RemoteAddr(), g.clientLimRate, req.FunctionCode())
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
+		g.health.incRate()
+		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
+	}
 	if g.lim != nil && !g.lim.Allow() {
 		g.log.Warnf("gateway %s: [conn %d] %s: rate limit (%d/s) exceeded, FC %d rejected",
 			g.dev.Name, connID, conn.RemoteAddr(), g.dev.RatePerSec, req.FunctionCode())

@@ -797,3 +797,56 @@ devices:
 		t.Fatal("transparent without device_addr: want error, got nil")
 	}
 }
+
+func TestPerClientRateAndLenientCorrelation(t *testing.T) {
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+    rate_per_sec: 50
+    rate_per_client_per_sec: 5
+    lenient_correlation: true
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	d := cfg.Devices[0]
+	if d.RatePerSec != 50 || d.RatePerClientPerSec != 5 {
+		t.Fatalf("rates = %d/%d, want 50/5", d.RatePerSec, d.RatePerClientPerSec)
+	}
+	if !d.HasLenientCorrelation() {
+		t.Fatal("HasLenientCorrelation = false, want true")
+	}
+
+	// Defaults: no per-client cap, strict correlation.
+	cfg2, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+`))
+	if err != nil {
+		t.Fatalf("parse minimal: %v", err)
+	}
+	d2 := cfg2.Devices[0]
+	if d2.RatePerClientPerSec != 0 {
+		t.Fatalf("RatePerClientPerSec = %d, want 0 (unlimited)", d2.RatePerClientPerSec)
+	}
+	if d2.HasLenientCorrelation() {
+		t.Fatal("HasLenientCorrelation = true by default, want strict")
+	}
+}
+
+func TestPerClientRateValidateErrors(t *testing.T) {
+	cfg, err := Parse([]byte(`
+devices:
+  - listen_addr: ":502"
+    device_addr: "10.1.1.1:502"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg.Devices[0].RatePerClientPerSec = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("negative rate_per_client_per_sec: want error, got nil")
+	}
+}

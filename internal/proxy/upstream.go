@@ -22,9 +22,10 @@ var ErrDeviceUnreachable = errors.New("proxy: device unreachable")
 //
 // Legacy devices typically accept one (or very few) TCP connections, so
 // all client traffic is multiplexed over this one connection: exchanges
-// are strictly serialized (first come, first served), one request in
-// flight at a time. Responses are matched by transaction ID; late or
-// stale responses from earlier timed-out requests are discarded.
+// are strictly serialized, one request in flight at a time, in FIFO
+// arrival order (see gate — a busy client cannot starve a quiet one).
+// Responses are matched by transaction ID; late or stale responses from
+// earlier timed-out requests are discarded.
 //
 // Any exchange failure (write error, read error, timeout) drops the
 // connection: after a timeout the device's reply may still be in flight
@@ -61,6 +62,14 @@ type upstream struct {
 	// transaction ID and protocol ID are reconstructed (RTU has none).
 	rtuOverTCP bool
 
+	// lenient, when true, relaxes DEVICE-leg correlation
+	// (lenient_correlation): the device's response is accepted even when
+	// it does not echo the transaction ID or sets a non-zero protocol ID.
+	// Framing stays strict — only correlation is tolerant. Safe because
+	// exactly one request is ever in flight on this connection; the
+	// response is rewritten to the client's transaction ID either way.
+	lenient bool
+
 	// origDST, when set, resolves the upstream target per CLIENT
 	// connection (B3 transparent mode): the client's conntrack
 	// SO_ORIGINAL_DST — the device IP it was actually dialing. nil =
@@ -74,6 +83,13 @@ type upstream struct {
 	// Only meaningful when origDST != nil; guarded by mu.
 	origDSTConn net.Conn
 
+	// gate serializes exchanges in ARRIVAL order. A plain mutex does not
+	// promise that (a waiter can be beaten to the lock by a late arrival),
+	// and the fairness claim is that a quiet poller is never starved by a
+	// noisy one. A cap-1 channel hands the slot over in the order the
+	// goroutines blocked, so scheduling is FIFO by construction.
+	gate chan struct{}
+
 	mu   sync.Mutex
 	conn net.Conn
 
@@ -83,7 +99,13 @@ type upstream struct {
 }
 
 func newUpstream(addr, name string, log Logger, met Metrics) *upstream {
-	return &upstream{addr: addr, name: name, log: log, met: metricsOrNop(met)}
+	return &upstream{
+		addr: addr,
+		name: name,
+		log:  log,
+		met:  metricsOrNop(met),
+		gate: make(chan struct{}, 1),
+	}
 }
 
 // setUpstreamHealth wires the B4 health registry into the upstream so
@@ -99,6 +121,10 @@ func (u *upstream) setUpstreamHealth(h *healthRegistry) {
 // clientConn is the front-leg connection that produced req (only used in
 // transparent mode to resolve the per-connection original destination).
 func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64, clientConn net.Conn) (mbtcp.ADU, error) {
+	// FIFO admission first (fairness), then the state lock. The channel is
+	// the queue: whichever goroutine blocked first gets the slot first.
+	u.gate <- struct{}{}
+	defer func() { <-u.gate }()
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
@@ -155,22 +181,36 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64,
 		u.drop(conn)
 		return mbtcp.ADU{}, fmt.Errorf("write to device: %w", err)
 	}
+	opts := mbtcp.ReadOptions{AllowForeignProtocolID: u.lenient}
 	for {
 		conn.SetReadDeadline(deadline)
-		resp, err := mbtcp.ReadADU(conn)
+		resp, err := mbtcp.ReadADUWith(conn, opts)
 		if err != nil {
 			u.drop(conn)
 			return mbtcp.ADU{}, fmt.Errorf("read from device: %w", err)
 		}
 		if resp.Header.TransactionID != req.Header.TransactionID {
-			// Late/stale response from an earlier timed-out request.
-			// The stream is frame-aligned, so skipping is safe.
-			u.log.Debugf("device %s: [conn %d] discarding stale response (txn %d, want %d)",
+			if !u.lenient {
+				// Late/stale response from an earlier timed-out request.
+				// The stream is frame-aligned, so skipping is safe.
+				u.log.Debugf("device %s: [conn %d] discarding stale response (txn %d, want %d)",
+					u.addr, connID, resp.Header.TransactionID, req.Header.TransactionID)
+				u.met.IncStaleDiscard()
+				u.health.incStale()
+				continue
+			}
+			// Lenient mode: the device does not echo transaction IDs.
+			// Exactly one request is in flight, so the frame that just
+			// arrived answers THIS request; the client still sees its own
+			// transaction ID below.
+			u.log.Debugf("device %s: [conn %d] accepting response with foreign txn %d (want %d; lenient correlation)",
 				u.addr, connID, resp.Header.TransactionID, req.Header.TransactionID)
-			u.met.IncStaleDiscard()
-			u.health.incStale()
-			continue
 		}
+		// Normalize the response header: front-leg clients correlate on
+		// THEIR transaction ID and expect protocol ID 0, whatever the
+		// device echoed (lenient mode may hand back junk in both fields).
+		resp.Header.TransactionID = req.Header.TransactionID
+		resp.Header.ProtocolID = mbtcp.ProtocolID
 		return resp, nil
 	}
 }

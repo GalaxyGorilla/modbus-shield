@@ -415,3 +415,20 @@ func mustCmdECKey(t *testing.T, k *ecdsa.PrivateKey) []byte {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})
 }
+
+func TestFlagsConfigShieldingKeys(t *testing.T) {
+	c := validFlags()
+	*c.ratePerClient = 5
+	*c.lenientCorr = true
+	cfg, err := flagsConfig(c)
+	if err != nil {
+		t.Fatalf("flagsConfig: %v", err)
+	}
+	d := cfg.Devices[0]
+	if d.RatePerClientPerSec != 5 {
+		t.Fatalf("RatePerClientPerSec = %d, want 5", d.RatePerClientPerSec)
+	}
+	if !d.HasLenientCorrelation() {
+		t.Fatal("LenientCorrelation not applied from --lenient-correlation")
+	}
+}

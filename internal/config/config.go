@@ -48,8 +48,29 @@ type Device struct {
 	MaxClients int `yaml:"max_clients"`
 
 	// RatePerSec caps accepted requests per second on the front leg
-	// (defends the device against polling storms). 0 = unlimited.
+	// (defends the device against polling storms). 0 = unlimited. The
+	// budget is SHARED by all clients on this device: it bounds device
+	// traffic as a whole.
 	RatePerSec int `yaml:"rate_per_sec"`
+
+	// RatePerClientPerSec caps accepted requests per second for EACH
+	// client connection, so one runaway poller cannot spend the shared
+	// budget of the others (they would otherwise all see 0x06). 0 =
+	// unlimited. The bucket lives as long as the connection; a client
+	// that reconnects starts with a full bucket (a burst damper, not a
+	// quota).
+	RatePerClientPerSec int `yaml:"rate_per_client_per_sec"`
+
+	// LenientCorrelation relaxes transaction correlation on the DEVICE
+	// leg only: responses are accepted even when the device does not echo
+	// the transaction ID, and a non-zero MBAP protocol ID in the
+	// device's reply is tolerated. Framing (length bounds, ADU cap) stays
+	// strict, and clients always receive their own transaction ID back.
+	// Default (false) is strict Modbus TCP, which is right for
+	// well-behaved devices; enable it for converters/gateways that do not
+	// echo IDs (they are otherwise unusable through the proxy: every
+	// request would end in exception 0x0B).
+	LenientCorrelation bool `yaml:"lenient_correlation"`
 
 	// TimeoutMs is the per-request upstream deadline in milliseconds.
 	// 0 = default (5000).
@@ -297,6 +318,9 @@ func (c *Config) Validate() error {
 		if d.RatePerSec < 0 {
 			return fmt.Errorf("config: %s: rate_per_sec must be >= 0", label)
 		}
+		if d.RatePerClientPerSec < 0 {
+			return fmt.Errorf("config: %s: rate_per_client_per_sec must be >= 0", label)
+		}
 		if d.TimeoutMs < 0 {
 			return fmt.Errorf("config: %s: timeout_ms must be >= 0", label)
 		}
@@ -428,6 +452,10 @@ func (d *Device) ReadCacheTTL() time.Duration {
 // the upstream target is the per-connection original destination
 // recovered from netfilter conntrack, not device_addr.
 func (d *Device) HasTransparent() bool { return d.Transparent }
+
+// HasLenientCorrelation reports whether the device leg tolerates a
+// non-conforming peer (no transaction-ID echo, foreign protocol ID).
+func (d *Device) HasLenientCorrelation() bool { return d.LenientCorrelation }
 
 // Validate checks a TLS configuration block: cert and key are
 // both-or-neither, client_ca requires cert/key, and all configured files

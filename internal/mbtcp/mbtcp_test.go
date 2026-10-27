@@ -273,3 +273,50 @@ func TestFunctionCodeZeroADU(t *testing.T) {
 		t.Error("IsException() = true, want false for zero ADU")
 	}
 }
+
+// TestReadADUWithForeignProtocolID pins the lenient device-leg option:
+// a non-zero MBAP protocol ID is rejected by default (ErrProtocolID) and
+// accepted with AllowForeignProtocolID, while the framing rules — length
+// bounds, truncation, trailing bytes — stay strict in both modes.
+func TestReadADUWithForeignProtocolID(t *testing.T) {
+	foreign := append([]byte(nil), specExampleFrame...)
+	foreign[2], foreign[3] = 0x12, 0x34 // protocol ID != 0
+
+	if _, err := ReadADU(bytes.NewReader(foreign)); !errors.Is(err, ErrProtocolID) {
+		t.Fatalf("strict ReadADU(foreign proto) = %v, want ErrProtocolID", err)
+	}
+
+	got, err := ReadADUWith(bytes.NewReader(foreign), ReadOptions{AllowForeignProtocolID: true})
+	if err != nil {
+		t.Fatalf("lenient ReadADUWith(foreign proto) = %v, want nil error", err)
+	}
+	if got.Header.ProtocolID != 0x1234 {
+		t.Fatalf("ProtocolID = %#x, want 0x1234 (reported as received)", got.Header.ProtocolID)
+	}
+	if !bytes.Equal(got.PDU, wantADU.PDU) {
+		t.Fatalf("PDU = %x, want %x", got.PDU, wantADU.PDU)
+	}
+
+	// Leniency must not buy a way out of the framing rules.
+	lenient := ReadOptions{AllowForeignProtocolID: true}
+	tooBig := append([]byte(nil), foreign...)
+	tooBig[4], tooBig[5] = 0x00, 0xFF // length 255 > MaxLength
+	if _, err := ReadADUWith(bytes.NewReader(tooBig), lenient); !errors.Is(err, ErrLengthTooLarge) {
+		t.Fatalf("lenient oversize = %v, want ErrLengthTooLarge", err)
+	}
+	tooSmall := append([]byte(nil), foreign...)
+	tooSmall[4], tooSmall[5] = 0x00, 0x01 // length 1 < MinLength
+	if _, err := ReadADUWith(bytes.NewReader(tooSmall), lenient); !errors.Is(err, ErrLengthTooSmall) {
+		t.Fatalf("lenient undersize = %v, want ErrLengthTooSmall", err)
+	}
+	truncated := foreign[:len(foreign)-1]
+	if _, err := ReadADUWith(bytes.NewReader(truncated), lenient); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("lenient truncated = %v, want wrapped io.ErrUnexpectedEOF", err)
+	}
+
+	// The strict entry point is unchanged for well-formed frames.
+	got, err = ReadADUWith(bytes.NewReader(specExampleFrame), lenient)
+	if err != nil || !aduEqual(got, wantADU) {
+		t.Fatalf("lenient spec example = (%+v, %v), want (%+v, nil)", got, err, wantADU)
+	}
+}

@@ -65,3 +65,65 @@ func FuzzReadADU(f *testing.F) {
 		}
 	})
 }
+
+// FuzzReadADULenient drives the device-leg tolerant entry point and
+// enforces the differential property that makes leniency safe: it may
+// accept MORE than the strict parser, but only frames whose sole defect
+// is a foreign MBAP protocol ID — never a framing violation (length
+// bounds, truncation, trailing bytes). Everything it accepts must survive
+// a re-frame + re-parse round-trip, and it must never reject what the
+// strict parser accepts.
+func FuzzReadADULenient(f *testing.F) {
+	spec := []byte{0x12, 0x34, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x01, 0x00, 0x01}
+	foreign := append([]byte(nil), spec...)
+	foreign[2], foreign[3] = 0x12, 0x34 // protocol ID != 0
+	f.Add(spec)
+	f.Add(foreign)
+	f.Add(append(append([]byte{}, foreign...), spec...))
+	for i := 0; i <= len(foreign); i++ {
+		f.Add(foreign[:i])
+	}
+	f.Add([]byte{0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x01}) // length above cap
+	f.Add([]byte{0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01}) // length below min
+	f.Add([]byte{})
+
+	opts := ReadOptions{AllowForeignProtocolID: true}
+	sentinels := []error{ErrShortFrame, ErrTruncated, ErrTrailingBytes,
+		ErrProtocolID, ErrLengthTooSmall, ErrLengthTooLarge}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		adu, lenientErr := ReadADUWith(bytes.NewReader(data), opts)
+		_, strictErr := ReadADU(bytes.NewReader(data))
+
+		if lenientErr != nil {
+			if errors.Is(lenientErr, ErrProtocolID) {
+				t.Fatalf("lenient mode rejected with ErrProtocolID: %v", lenientErr)
+			}
+			documented := errors.Is(lenientErr, io.EOF) || errors.Is(lenientErr, io.ErrUnexpectedEOF)
+			for _, s := range sentinels {
+				documented = documented || errors.Is(lenientErr, s)
+			}
+			if !documented {
+				t.Fatalf("lenient mode returned non-sentinel error: %v", lenientErr)
+			}
+			if strictErr == nil {
+				t.Fatalf("lenient mode rejected a frame strict mode accepted: %v", lenientErr)
+			}
+			return
+		}
+
+		// Leniency may only forgive the protocol ID — never framing.
+		if strictErr != nil && !errors.Is(strictErr, ErrProtocolID) {
+			t.Fatalf("lenient mode accepted a frame strict rejected for framing: %v", strictErr)
+		}
+
+		// Accepted frames must re-frame and re-parse to the same ADU.
+		got, err := ReadADUWith(bytes.NewReader(adu.Frame()), opts)
+		if err != nil {
+			t.Fatalf("lenient re-parse of accepted frame: %v", err)
+		}
+		if got.Header != adu.Header || !bytes.Equal(got.PDU, adu.PDU) {
+			t.Fatalf("lenient round-trip mismatch: %+v vs %+v", got, adu)
+		}
+	})
+}

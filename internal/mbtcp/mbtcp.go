@@ -19,8 +19,10 @@
 // only component that ever touches untrusted wire bytes. Validation happens
 // before any allocation sized from the frame, so malformed input can never
 // drive memory use. Parsing is strict (exact frame length, protocol ID
-// fixed at 0); correlation across requests is deliberately handled by the
-// caller, not here.
+// fixed at 0); ReadADUWith can relax ONLY the protocol ID for a
+// non-conforming DEVICE (lenient correlation) while keeping the framing
+// rules — length bounds always size the read. Correlation across requests
+// is deliberately handled by the caller, not here.
 package mbtcp
 
 import (
@@ -77,7 +79,14 @@ type Header struct {
 // Validate checks the header against the Modbus TCP framing rules:
 // protocol ID fixed at 0 and length within [MinLength, MaxLength].
 func (h Header) Validate() error {
-	if h.ProtocolID != ProtocolID {
+	return h.validate(ReadOptions{})
+}
+
+// validate is Validate with caller-selected tolerance for non-conforming
+// peers. Only the protocol ID can be relaxed; the length bounds are
+// structural (they size the read) and are always enforced.
+func (h Header) validate(opts ReadOptions) error {
+	if h.ProtocolID != ProtocolID && !opts.AllowForeignProtocolID {
 		return ErrProtocolID
 	}
 	if h.Length < MinLength {
@@ -87,6 +96,19 @@ func (h Header) Validate() error {
 		return ErrLengthTooLarge
 	}
 	return nil
+}
+
+// ReadOptions selects tolerance for the peer on the other end of a stream.
+// The zero value is strict Modbus TCP (what the front leg and every fuzz
+// target use). It exists for the DEVICE leg only: some serial-to-TCP
+// converters and old gateways put junk in the protocol-ID field, and a
+// handful never echo transaction IDs — behavior a proxy cannot fix at the
+// device, so it is opted into per device (lenient_correlation).
+type ReadOptions struct {
+	// AllowForeignProtocolID accepts frames whose protocol ID is not 0
+	// instead of failing with ErrProtocolID. The framing (length bounds)
+	// stays strict either way.
+	AllowForeignProtocolID bool
 }
 
 // ADU is a complete Modbus TCP application data unit.
@@ -157,6 +179,16 @@ func ParseADU(buf []byte) (ADU, error) {
 // the stream ends cleanly at a frame boundary; a truncated frame wraps
 // io.ErrUnexpectedEOF or the underlying read error.
 func ReadADU(r io.Reader) (ADU, error) {
+	return ReadADUWith(r, ReadOptions{})
+}
+
+// ReadADUWith is ReadADU with explicit tolerance for a non-conforming
+// peer. The device leg uses AllowForeignProtocolID when the deployment
+// opts into lenient correlation; everything else behaves exactly like
+// ReadADU. Framing stays strict: the length field is validated and
+// bounds the read in every mode, so a tolerant protocol ID can never be
+// used to desynchronize the stream or over-allocate.
+func ReadADUWith(r io.Reader, opts ReadOptions) (ADU, error) {
 	var hdr [HeaderLen]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) {
@@ -170,7 +202,7 @@ func ReadADU(r io.Reader) (ADU, error) {
 		Length:        binary.BigEndian.Uint16(hdr[4:6]),
 		UnitID:        hdr[6],
 	}
-	if err := h.Validate(); err != nil {
+	if err := h.validate(opts); err != nil {
 		return ADU{}, err
 	}
 	pdu := make([]byte, int(h.Length)-1) // length already bounds this to 1..253

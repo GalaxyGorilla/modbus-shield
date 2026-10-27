@@ -47,7 +47,38 @@ serial ports.
 ## 3. Status / Roadmap
 
 **Current state: BACKLOG COMPLETE + docs consistency pass + streamlining
-pass + identity rewording.** The software is presented as what it is —
+pass + identity rewording + portability/shielding hardening pass.**
+
+Hardening pass (2026-10-27), all driven by a self-review rather than new
+features — no CI was added (deliberate: this project stays CI-free and
+the checks run manually via `make`):
+
+- **Portability fixed (real bugs):** the `internal/proxy` test binary did
+  not compile off Linux (`transparent_test.go` used the Linux-only
+  `parseOrigDst` without a build tag — the parse tests now live in
+  `origdst_linux_test.go`), and the watchdog's fake systemd socket used
+  `t.TempDir()`, whose macOS path exceeds `sun_path` (bind EINVAL — now
+  `shortTempDir`). `go test ./... -race` is green on darwin/arm64.
+- **Lenient device-leg correlation** (`lenient_correlation` /
+  `--lenient-correlation`): the doc posture "strict framing, liberal
+  correlation" was untrue in code — strict txn-ID echo plus a mandatory
+  protocol ID of 0 on the DEVICE leg made non-conforming
+  converters/gateways fail 100% of requests with 0x0B. Now opt-in
+  tolerated, framing unchanged, response header normalized so clients
+  always see their own txn ID.
+- **Per-client rate limit** (`rate_per_client_per_sec` /
+  `--rate-per-client-per-sec`): the shared bucket let one runaway
+  poller starve every other client with 0x06.
+- **FIFO upstream gate**: the "fair queue" claim was a plain mutex; the
+  slot is now handed over through a cap-1 channel, and a test pins the
+  observable fairness property.
+- **Shutdown drain**: `Stop` used to cut in-flight responses off; it now
+  drains `inFlight` first and then closes idle connections (bounded,
+  prompt).
+- `gofmt -l` drift in `health.go`/`rtu_test.go` fixed; `make test` now
+  gates on gofmt too.
+
+The software is presented as what it is —
 a **Modbus TCP security proxy**; the "box in front of the device" is a
 deployment story (from the original motivation), not the identity.
 README hero/Why/shape table, CLI usage + help text, and AGENTS.md
@@ -128,24 +159,30 @@ milestone sections above for file inventories.)
 
 ## 5. Build / Test
 
-Go at `/usr/local/go/bin/go` (on PATH via `/etc/profile.d/go.sh`);
+Go 1.27.3 (the exact toolchain is pinned by the `toolchain` directive in
+go.mod; this dev machine has it at `/opt/homebrew/bin/go`, Linux boxes
+usually at `/usr/local/go/bin/go`);
 go.mod declares minimum **1.26.0** (CI-free project — tests run manually).
 
-**Latest local verification (2026-10-21):** `go build ./...`, `go vet
-./...`, and `go test ./... -race -timeout 180s` passed under Go 1.27.3
-(pinned via the `toolchain` directive in go.mod — GO-2026-6809 in the
-Go 1.27.2 `crypto/x509` stdlib made 1.27.2 unusable for TLS-enabled
-releases; with 1.27.3 `govulncheck ./...` reports no vulnerabilities).
-`make release-all` produced valid static Linux amd64/arm64/armv7
-binaries under 1.27.3; the amd64 binary ran `version`. `staticcheck
-./...` passed. The optional `make interop` suite was not run because
-`mbpoll` is absent (the script exits 77 by design).
+**Latest local verification (2026-10-27, macOS/darwin arm64):** `go
+build ./...`, `go vet ./...`, `gofmt -l .` (clean) and `go test ./...
+-race -timeout 240s` pass under Go 1.27.3; `staticcheck ./...` passes.
+The suite is now green OFF Linux too — two real defects were found and
+fixed in the hardening pass (see below): `transparent_test.go` called
+the Linux-only `parseOrigDst` without a build tag (the whole
+`internal/proxy` test binary failed to compile on macOS), and the
+watchdog's fake-systemd socket used `t.TempDir()`, whose macOS
+`/var/folders/...` path exceeds the 104-byte `sun_path` limit (bind
+EINVAL). Both are recorded because the previous verification ran only
+on Linux and therefore could not see them. The optional `make interop`
+suite still has not been run (`mbpoll` absent; exit 77 by design).
 
 **Read-cache + rate-limiter ordering (pinned by
-TestGatewayRateLimitBeforeCache):** the rate limiter runs BEFORE the
-cache lookup — a cache hit avoids device traffic but still consumes a
-rate token and is rejected with 0x06 when the limit is exhausted.
-All cache-ordering claims (config.go field comment, cache.go package
+TestGatewayRateLimitBeforeCache):** both rate limiters (per-client, then
+shared) run BEFORE the cache lookup — a cache hit avoids device traffic
+but still consumes a rate token and is rejected with 0x06 when the limit
+is exhausted. All cache-ordering claims (config.go field comment,
+cache.go package
 doc, BACKLOG.md B8 entry, README bullet) were re-audited and now state
 this consistently; the B3 spike doc's "if we build it" / "decision
 required" sections are explicitly framed as historical notes.
@@ -157,7 +194,9 @@ go test ./... -race -timeout 180s
 ```
 
 `make build` / `make test` / `make vet` / `make release` wrap the same
-commands (`release` = stripped static binary, `CGO_ENABLED=0
+commands (`make test` also fails on non-empty `gofmt -l` output — the
+only formatting gate in this CI-free project; `release` = stripped
+static binary, `CGO_ENABLED=0
 -trimpath -ldflags "-s -w"`, for appliance deployment). `make release-all`
 cross-builds stripped static binaries for all appliance platforms into
 `dist/`: `linux-amd64`, `linux-arm64`, `linux-armv7` (pure Go + CGO
@@ -230,25 +269,33 @@ or set `-timeout` on `go test` (network tests would hang without one).
   for truncated frames). All rejections are package sentinels
   (`ErrShortFrame`, `ErrTruncated`, `ErrTrailingBytes`, `ErrProtocolID`,
   `ErrLengthTooSmall`, `ErrLengthTooLarge`) — the fuzz target enforces
-  this. `ADU.PDU` never contains the unit ID (`Header.UnitID` holds it) so
+  this. `ReadADUWith(r, ReadOptions{AllowForeignProtocolID: true})` is
+  the DEVICE-leg-only relaxation (lenient correlation): it tolerates a
+  foreign protocol ID but keeps every framing rule, because the length
+  field sizes the read in all modes. Strict entry points are the
+  default and are what the front leg + both fuzz targets use.
+  `ADU.PDU` never contains the unit ID (`Header.UnitID` holds it) so
   unit-ID remapping can rewrite both independently. Build via `NewADU`/
   `AppendTo` (buffer-reusing). Proxy-generated exceptions use
   `ExceptionPDU(fc, code)` (FC|0x80 + code).
 - **`internal/config` YAML schema** (one file = one instance, N
   `devices:` entries): `name` (opt; defaults to device_addr), `listen_addr`,
   `device_addr`, `read_only`, `allow` (IPs/CIDRs), `max_clients` (def 16),
-  `rate_per_sec`, `timeout_ms` (def 5000), `device_unit_id` (opt remap),
+  `rate_per_sec`, `rate_per_client_per_sec`, `lenient_correlation`,
+  `timeout_ms` (def 5000), `device_unit_id` (opt remap),
   plus top-level `log.{level,format}` and `metrics_listen`. Validate
   enforces: ≥1 device, host:port syntax, unique listen addrs,
-  non-negative limits, valid IP/CIDR entries. Accessors:
-  `Device.RequestTimeout()`, `HasUnitRemap()`, `UpstreamUnitID()`.
+  non-negative limits (both rates included), valid IP/CIDR entries.
+  Accessors: `Device.RequestTimeout()`, `HasUnitRemap()`,
+  `UpstreamUnitID()`, `HasLenientCorrelation()`.
 - **`internal/proxy` gateway contract**: one `gateway` per config device
   = front-leg `Serve` loop + per-client `handleClient` lock-step loop
   (read one ADU -> forward -> write one ADU). All client traffic
   multiplexes over ONE `upstream` connection (legacy devices accept few
-  connections); exchanges are serialized by `upstream.mu`, one in-flight
-  request, responses matched by transaction ID, late/stale responses
-  discarded (stream stays frame-aligned, skipping is safe). ANY exchange
+  connections); exchanges are serialized by a cap-1 FIFO gate
+  (`upstream.gate`) plus `upstream.mu`, one in-flight request, responses
+  matched by transaction ID, late/stale responses discarded (stream stays
+  frame-aligned, skipping is safe). ANY exchange
   error drops the device connection (post-timeout stream state is
   unknown); next exchange re-dials with 100ms->1s bounded backoff and
   `ErrDeviceUnreachable` (clients get exception 0x0B) when the deadline
@@ -260,6 +307,43 @@ or set `-timeout` on `go test` (network tests would hang without one).
   first bind error aborts) -> `Stop()`; `bound` channel signals when
   listeners are up (tests wait on it before dialing). `Logger` is a
   minimal zap-agnostic interface injected by main.
+- **Scheduling fairness contract**: the upstream slot is handed over
+  through `upstream.gate` (cap-1 channel), which releases waiters in the
+  order they blocked; a plain mutex makes no ordering promise. Because
+  every client loop is lock-step, at most ONE request per client is ever
+  queued, so the FIFO gate yields round-robin-ish service and a quiet
+  poller is never starved by a busy one. `TestGatewayFairScheduling`
+  pins the observable property (the device never sees one client three
+  times in a row) — it passes on the mutex too, so it verifies the
+  property, not the mechanism; keep the gate because it makes the
+  guarantee explicit instead of relying on Go's mutex starvation mode.
+- **Lenient device-leg correlation (`lenient_correlation`, opt-in)**:
+  set on `upstream.lenient` from `Device.HasLenientCorrelation()`. The
+  device leg then reads with `mbtcp.ReadADUWith(...,
+  AllowForeignProtocolID: true)` and accepts a response whose
+  transaction ID does not match the request (exactly one request is in
+  flight, so that frame IS the answer). The response header is
+  normalized on every path — `resp.Header.TransactionID =
+  req.Header.TransactionID`, `ProtocolID = 0` — so a non-conforming
+  device can never leak a wrong transaction ID or protocol ID to a
+  client. Framing stays strict: length bounds, ADU cap, truncated frames
+  still fail and drop the connection. Default off; the front leg is
+  never lenient. Pinned by `TestStrictCorrelationRejectsForeignTxn`,
+  `TestLenientCorrelationAcceptsForeignTxn`, `TestForeignProtocolID`
+  (fake-device knobs `MangleTxn` + `ForeignProtocolID`) and
+  `TestReadADUWithForeignProtocolID` (framing rules still enforced).
+- **Shutdown drain contract (`Runner.Stop`)**: close listeners -> wait
+  for the `Serve` goroutines -> `gateway.drain(5s)`: poll
+  `gateway.inFlight` (incremented around `serve` + `writeADU`) until no
+  request is being served, then close the tracked client connections
+  (`gateway.conns`) and wait for the handler `WaitGroup`. Idle handlers
+  are parked in a read and never finish on their own, so closing them is
+  what makes shutdown prompt (`TestShutdownDrainsInFlightRequest`
+  asserts both: the response survives, and Stop stays under 2s). Do NOT
+  reintroduce a plain `wg.Wait()` before closing connections — that
+  makes every shutdown with an idle keeper cost the full grace period.
+  `inFlight` covers the write, not just the exchange, so a response is
+  never cut off mid-write.
 - **Multiple listeners per device (B10)**: `extra_listen` (YAML list) +
   repeatable `--extra-listen` flag add front doors to the SAME gateway.
   `Runner.Run` binds `listen_addr` + every `extra_listen` entry and
@@ -286,15 +370,25 @@ or set `-timeout` on `go test` (network tests would hang without one).
   caught by TestGatewayConnCapFriendly burst test). ACL check decrements
   on rejection too.
 - **`internal/proxy` rate limiter contract** (`ratelimit.go`): token
-  bucket, capacity = 1 second's worth of `rate_per_sec` tokens, continuous
-  refill, burst absorbed without rejection. `newRateLimiter(0|negative)`
-  returns nil = unlimited; ALL checks are nil-guarded (same pattern as
-  the nil allow-list). `last` initializes lazily on first Allow() so test
-  clock injection (`nowFn`) is exact — never read the wall clock at
-  construction. Order in `serve()`: read-only check first (blocked writes
-  never consume rate tokens), then rate limit, then remap + exchange.
-  Rate-rejected requests get exception 0x06 Server Device Busy (spec:
-  "client should retry later") and the device never sees them.
+  bucket, capacity = 1 second's worth of the configured rate tokens,
+  continuous refill, burst absorbed without rejection.
+  `newRateLimiter(0|negative)` returns nil = unlimited; ALL checks are
+  nil-guarded (same pattern as the nil allow-list). `last` initializes
+  lazily on first Allow() so test clock injection (`nowFn`) is exact —
+  never read the wall clock at construction. TWO buckets exist: the
+  shared `rate_per_sec` (`gateway.lim`, one per device, bounds total
+  device traffic) and the per-connection `rate_per_client_per_sec`
+  (`clientLim`, created in `handleClient`, so a reconnect starts with a
+  full bucket — a burst damper, not a quota). Order in `serve()`:
+  read-only check first (blocked writes never consume tokens), then the
+  PER-CLIENT bucket, then the SHARED bucket, then the cache lookup, then
+  remap + exchange. The per-client check MUST come before the shared one:
+  otherwise a runaway client's rejections drain the shared budget and
+  starve everybody else — that bug was real and is pinned by
+  `TestGatewayPerClientRateLimit` (hog gets 0x06, quiet client still
+  works). Rate-rejected requests get exception 0x06 Server Device Busy
+  (spec: "client should retry later") and the device never sees them;
+  both rejections count as outcome `exception_rate` + `incRate()`.
 - **Pacing + idle timeout contracts (B5/B6)**: `request_delay_ms` is
   enforced in `upstream.exchange` under `u.mu` (before `ensureConn`) —
   the gap is measured across ALL client requests multiplexed onto the

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/GalaxyGorilla/modbus-shield/internal/config"
 )
@@ -74,14 +75,24 @@ func (r *Runner) Run() error {
 	return <-errCh
 }
 
-// Stop closes all listeners and waits for client loops to exit.
+// Stop shuts the gateways down: listeners first (no new clients), then a
+// bounded drain of the client handlers so in-flight responses are not cut
+// off mid-write, then the device connections. Always terminates — idle
+// clients are force-closed once the drain grace period expires.
 func (r *Runner) Stop() {
 	r.closeListeners()
 	r.wg.Wait()
 	for _, gw := range r.gws {
+		gw.drain(drainGrace)
+	}
+	for _, gw := range r.gws {
 		gw.up.close()
 	}
 }
+
+// drainGrace bounds how long Stop waits for in-flight client handlers
+// before force-closing the remaining (idle) client connections.
+const drainGrace = 5 * time.Second
 
 func (r *Runner) closeListeners() {
 	for _, ln := range r.lns {

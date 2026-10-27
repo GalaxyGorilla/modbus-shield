@@ -5,6 +5,27 @@ All items are done. The last one (B3) landed after a design spike
 
 ## Done (kept for reference)
 
+- ~~B13 hardening pass: portability, lenient correlation, per-client
+  limits, fairness, drain~~ — **done** (2026-10-27, self-review driven,
+  no new protocol surface): the test suite now compiles and passes off
+  Linux (Linux-only `parseOrigDst` tests moved behind a build tag; the
+  watchdog fake-systemd socket moved off the too-long macOS TMPDIR path);
+  `lenient_correlation` accepts a device leg that does not echo
+  transaction IDs or sets a foreign MBAP protocol ID (framing stays
+  strict, responses are normalized so clients always see their own txn
+  ID); `rate_per_client_per_sec` adds a per-connection bucket that is
+  checked BEFORE the shared `rate_per_sec` bucket so a runaway poller's
+  rejections cannot drain everybody else's budget; the upstream slot is
+  handed over through a cap-1 FIFO gate instead of relying on mutex
+  ordering; `Runner.Stop` drains in-flight requests before closing idle
+  connections. Pinned by `TestReadADUWithForeignProtocolID`,
+  `TestStrictCorrelationRejectsForeignTxn`,
+  `TestLenientCorrelationAcceptsForeignTxn`, `TestForeignProtocolID`,
+  `TestGatewayPerClientRateLimit`, `TestGatewayFairScheduling` and
+  `TestShutdownDrainsInFlightRequest`. `make test` now also gates on
+  `gofmt -l`. Still open (deliberately, not scheduled): register-range
+  write policy, config reload without a restart, CI.
+
 - ~~B3 Transparent bump-in-the-wire mode~~ — **done**: `transparent: true`
   (or `--transparent`, Linux-only). The gateway forwards to the client's
   ORIGINAL destination recovered from netfilter conntrack

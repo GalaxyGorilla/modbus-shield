@@ -74,6 +74,10 @@ modbus-shield gateway \
   any client.
 - `--max-clients` / `--rate-per-sec` — shielding limits that protect
   fragile devices from connection and polling storms.
+- `--rate-per-client-per-sec` — optional per-connection cap (add it when
+  several pollers share the box: one runaway client then gets 0x06
+  itself instead of consuming the `--rate-per-sec` budget everyone else
+  needs).
 
 Point every client at the box IP instead of the device IP — that
 repointing is the whole migration.
@@ -125,6 +129,10 @@ its unit IDs; register maps and data encodings flow through untouched
 - Clients outside the `allow` list: **connection refused**.
 - Bursts above `rate_per_sec`: rejected with exception 0x06 (Server
   Device Busy — the spec's "retry later" code), device untouched.
+- A single client above `rate_per_client_per_sec`: that client gets 0x06
+  while the others keep their share of `rate_per_sec` (the per-client
+  check runs first, so a rejected request never charges the shared
+  budget).
 - Connections above `max_clients`: rejected at accept time.
 - Device outage: clients get exception 0x0B (Gateway Target Device
   Failed To Respond); the box re-dials automatically with bounded
@@ -160,8 +168,15 @@ its unit IDs; register maps and data encodings flow through untouched
 - **One upstream connection** — all client traffic multiplexes over a
   single device connection (many legacy devices accept only one or very
   few concurrent TCP sessions and degrade under more). Requests are
-  serialized first-come-first-served; each client's requests are
+  serialized first-come-first-served (FIFO hand-over, so a quiet poller
+  is never starved by a busy one); each client's requests are
   correlated independently by transaction ID.
 - **Fragile devices** — `max_clients` + `rate_per_sec` exist precisely
   for the fragile-device case; a misbehaving client cannot wedge the
   others (fair scheduling, per-request deadlines).
+- **Non-conforming devices** — if a converter or old gateway does not
+  echo transaction IDs (or sets a non-zero MBAP protocol ID), every
+  request ends in exception 0x0B under strict correlation. Set
+  `lenient_correlation: true` (or `--lenient-correlation`) to accept
+  those responses; framing stays strict and clients still see their own
+  transaction ID.

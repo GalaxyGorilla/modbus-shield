@@ -19,8 +19,19 @@ devices:
       - "10.8.0.0/24"            # SCADA segment
       - "192.168.1.7"            # one engineering station
     max_clients: 8               # shield the device from conn storms
-    rate_per_sec: 50             # shield it from polling storms
+    rate_per_sec: 50             # shield it from polling storms (shared by
+                                 # all clients — total device traffic)
+    # rate_per_client_per_sec: 5 # optional: cap EACH client connection too,
+                                 # so one runaway poller cannot spend the
+                                 # shared budget the others need (its
+                                 # rejections do not charge rate_per_sec)
     timeout_ms: 5000             # per-request upstream deadline
+    # lenient_correlation: true  # optional: accept a device leg that does
+                                 # not echo transaction IDs or sets a
+                                 # non-zero MBAP protocol ID (some
+                                 # converters do; strict mode rejects them
+                                 # with exception 0x0B). Framing stays
+                                 # strict; clients still see their own txn ID
     # extra_listen:              # optional (B10): additional front-leg
     #   - ":5021"                # bind addresses for the SAME device —
     #   - "127.0.0.2:5020"       # every door shares ONE upstream

@@ -107,6 +107,9 @@ A restart is boring by design:
 
 - the front-leg listener rebinds and waits; clients reconnect on their
   next poll (SCADA systems retry automatically),
+- requests already at the device are drained before shutdown completes
+  (a response is not cut off mid-write); idle client connections are
+  then closed so the stop stays prompt,
 - the device sees the same thing it always sees: one plain Modbus TCP
   connection,
 - blocked writes and rejected clients keep being rejected — there is no
@@ -123,7 +126,7 @@ Symptoms as the **client** sees them, with the box-side diagnosis:
 | Client sees | Likely cause | Verify on the box | Fix |
 |---|---|---|---|
 | exception 0x0B (Gateway Target Device Failed To Respond) | device down or wire broken | `selftest`; `modbus_shield_device_up` gauge; `reconnects_total` climbing | restore device power/wiring; the box recovers on its own once the device answers |
-| exception 0x06 (Server Device Busy) | rate limit hit — more polling than `rate_per_sec` allows | `requests_total{outcome="exception_rate"}` | raise `rate_per_sec`, reduce pollers, or accept the shielding |
+| exception 0x06 (Server Device Busy) | rate limit hit — more polling than `rate_per_sec` (shared) or `rate_per_client_per_sec` (one client) allows | `requests_total{outcome="exception_rate"}`; a per-client hit logs `per-client rate limit` with the `[conn N]` ID | raise the limit, reduce pollers, or accept the shielding — if only ONE client sees 0x06, set/raise `rate_per_client_per_sec` instead of the shared budget |
 | connection refused / dropped | client not on the `allow` list, or `max_clients` exhausted | `connections_rejected_total`; log line `connection rejected` | fix the allow-list entry (IP/CIDR) or raise `max_clients` |
 | everything slow | device busy or slow wire | `forward_latency_seconds` p99 vs `timeout_ms` | check device load; tune `timeout_ms` so it exceeds the device's real worst-case RTT |
 | reads fine, writes always fail with 0x01 | listener is `read_only` — working as intended | config `read_only: true` | that is the protection; remove `read_only` only deliberately |

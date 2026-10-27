@@ -5,14 +5,20 @@
 BINARY := modbus-shield
 GO     ?= go
 
-.PHONY: all build test vet staticcheck govulncheck race interop release release-all sbom vulnscan clean
+.PHONY: all build test fmt-check vet staticcheck govulncheck race interop release release-all sbom vulnscan clean
 
 all: build
 
 build:
 	$(GO) build -o bin/$(BINARY) ./cmd/modbus-shield
 
-test:
+# fmt-check fails when any Go file is not gofmt-formatted. The repo is
+# gofmt-clean; without CI this is the gate that keeps it that way.
+fmt-check:
+	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then \
+		echo "gofmt needed on:"; echo "$$out"; exit 1; fi
+
+test: fmt-check
 	$(GO) test ./... -race -timeout 180s
 
 vet:

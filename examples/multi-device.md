@@ -106,7 +106,9 @@ taking down the others.
   listener, upstream connection, or counters.
 - **Per-device shielding** — `max_clients` and `rate_per_sec` are
   per-listener budgets: a polling storm on the inverter listener never
-  reaches the fragile PLC.
+  reaches the fragile PLC. `rate_per_client_per_sec` adds a
+  per-connection cap, so one poller inside a device entry cannot eat the
+  budget of the other clients polling that same device.
 - **Per-device observability** — every metric is labeled by `device`
   name (defaults to the device address when `name` is omitted); the
   `device_up` gauge tells you exactly which device is unreachable.

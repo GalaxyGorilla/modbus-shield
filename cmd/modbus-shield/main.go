@@ -88,6 +88,8 @@ type cliFlags struct {
 	allow          *[]string
 	maxClients     *int
 	ratePerSec     *int
+	ratePerClient  *int
+	lenientCorr    *bool
 	timeoutMs      *int
 	requestDelayMs *int
 	idleTimeoutMs  *int
@@ -123,7 +125,9 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.readOnly = fs.Bool("read-only", false, "block all write function codes (device never sees writes)")
 	c.allow = fs.StringArray("allow", nil, "client allow-list entry, IP or CIDR (repeatable; empty = any client)")
 	c.maxClients = fs.Int("max-clients", 0, "max concurrent client connections (0 = default 16)")
-	c.ratePerSec = fs.Int("rate-per-sec", 0, "max accepted requests per second (0 = unlimited)")
+	c.ratePerSec = fs.Int("rate-per-sec", 0, "max accepted requests per second for the whole device, all clients (0 = unlimited)")
+	c.ratePerClient = fs.Int("rate-per-client-per-sec", 0, "max accepted requests per second per client connection, so one poller cannot starve the others (0 = unlimited)")
+	c.lenientCorr = fs.Bool("lenient-correlation", false, "device leg: accept responses that do not echo the transaction ID or set a non-zero protocol ID (framing stays strict; for non-conforming converters)")
 	c.timeoutMs = fs.Int("timeout-ms", 0, "per-request upstream deadline in ms (0 = default 5000)")
 	c.requestDelayMs = fs.Int("request-delay-ms", 0, "minimum gap between requests toward the device in ms (0 = unpaced)")
 	c.idleTimeoutMs = fs.Int("idle-timeout-ms", 0, "close front connections idle longer than this in ms (0 = disabled)")
@@ -166,7 +170,10 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 		Allow:       *c.allow,
 		MaxClients:  *c.maxClients,
 		RatePerSec:  *c.ratePerSec,
-		TimeoutMs:   *c.timeoutMs,
+
+		RatePerClientPerSec: *c.ratePerClient,
+		LenientCorrelation:  *c.lenientCorr,
+		TimeoutMs:           *c.timeoutMs,
 
 		RequestDelayMs: *c.requestDelayMs,
 		IdleTimeoutMs:  *c.idleTimeoutMs,
