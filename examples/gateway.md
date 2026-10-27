@@ -126,6 +126,11 @@ its unit IDs; register maps and data encodings flow through untouched
 - Write function codes on a `read_only` listener: **rejected** with a
   proxy-generated Modbus exception (0x01) — that rejection is the
   protection; the device never sees the write.
+- Writes outside a `write_policy` window: **rejected** with exception
+  0x02 (Illegal Data Address); the device never sees them. Deny rules
+  win over allow rules, an allow rule must cover the WHOLE write range
+  (a multi-register write cannot straddle an allowed window), and a
+  write whose range cannot be parsed is denied.
 - Clients outside the `allow` list: **connection refused**.
 - Bursts above `rate_per_sec`: rejected with exception 0x06 (Server
   Device Busy — the spec's "retry later" code), device untouched.
@@ -141,6 +146,34 @@ its unit IDs; register maps and data encodings flow through untouched
 
 ## Hardening options
 
+- **Address-scoped writes instead of read-only** — `read_only` is
+  all-or-nothing; `write_policy` decides *which* writes pass:
+
+  ```yaml
+  write_policy:
+    default: deny            # allow-list mode (use allow for deny-list)
+    rules:
+      - fc: [6, 16]          # write single/multiple registers
+        from: 0
+        to: 99
+        action: allow        # the SCADA may ramp the setpoint block
+      - unit: 2              # one client unit ID may only touch its own
+        fc: [6]              # registers
+        from: 200
+        to: 255
+        action: allow
+      - fc: [6, 16]          # a protected block: deny wins over allow
+        from: 400
+        to: 499
+        action: deny
+  ```
+
+  Flags equivalent: `--write-range '*:6,16:0-99' --write-range
+  '!*:6,16:400-499'` (with `--write-default deny` as the implicit
+  default). Rule order is irrelevant; rules are evaluated as a set.
+  FC 21 (file record) carries no register address, so it needs a rule
+  without `from`/`to`. `read_only` and `write_policy` are mutually
+  exclusive.
 - **Unit-ID remap** — for devices behind a serial converter where the
   device only answers one fixed unit ID but your clients use another:
   `--device-unit-id 17` (or `device_unit_id: 17` in YAML). Requests are

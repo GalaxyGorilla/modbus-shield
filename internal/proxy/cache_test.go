@@ -190,25 +190,25 @@ func TestGatewayReadCacheWriteNotCached(t *testing.T) {
 	}
 }
 
-// TestGatewayRateLimitBeforeCache pins the serve() ordering: the rate
-// limiter runs BEFORE the cache lookup, so a cache hit still consumes a
-// rate token and is rejected with 0x06 when the limit is exhausted.
-// (A hit saves the DEVICE, not the rate budget.) The contract text in
-// gateway.go, README.md and configs/gateway.yaml documents this — this
-// test keeps code and docs in sync.
-func TestGatewayRateLimitBeforeCache(t *testing.T) {
+// TestGatewayCacheHitBypassesRateLimit pins the serve() ordering: the
+// cache lookup runs BEFORE the rate limiters, so a cache hit costs no
+// rate token and is answered normally even when the limit is exhausted.
+// Rationale: the limiters exist to protect the DEVICE, and a hit never
+// touches it — charging it to the device budget would turn a free answer
+// into a spurious 0x06. (Reversal of the original B8 ordering, decided in
+// the 2026-10 hardening pass; see AGENTS.md and README.md.)
+func TestGatewayCacheHitBypassesRateLimit(t *testing.T) {
 	dev := newFakeDevice(t)
 	front := startGateway(t, config.Device{
 		DeviceAddr:     dev.Addr(),
-		RatePerSec:     2,
-		ReadCacheTTLMs: 60000, // any hit would mask the limiter if it ran first
+		RatePerSec:     1,     // one token: only the first request can reach the device
+		ReadCacheTTLMs: 60000, // every later request must be a hit
 	})
 
 	conn := dial(t, front)
 	defer conn.Close()
 
 	adu, _ := mbtcp.NewADU(0x1234, 1, []byte{3, 0x01, 0x00, 0x00, 0x01})
-	busy := 0
 	for i := 0; i < 10; i++ {
 		if _, err := conn.Write(adu.Frame()); err != nil {
 			t.Fatalf("write %d: %v", i, err)
@@ -220,21 +220,12 @@ func TestGatewayRateLimitBeforeCache(t *testing.T) {
 		}
 		if resp.IsException() {
 			code, ok := resp.ExceptionCode()
-			if !ok || code != mbtcp.ExceptionServerBusy {
-				t.Fatalf("read %d: exception %d (ok=%v), want 0x06", i, code, ok)
-			}
-			busy++
+			t.Fatalf("read %d: exception 0x%02x (ok=%v), want a cache hit instead (rate limiter ran first?)", i, code, ok)
 		}
 	}
-	// rate_per_sec=2: burst 2 plus refill during 10 sequential requests —
-	// a few pass, the rest MUST be rejected by the limiter even though
-	// every response is identical and cacheable. If the cache ran before
-	// the limiter, only the first request would ever reach it and the
-	// remaining 9 would be cache hits (busy stays 0).
-	if busy == 0 {
-		t.Fatal("no busy responses; cache appears to run before the rate limiter")
-	}
-	if got := int(dev.Served()); got > 3 {
-		t.Fatalf("device served %d, want <= ~3 (burst + refill)", got)
+	// The device must have seen exactly the first request: everything else
+	// was answered from the cache, never touching the device or the bucket.
+	if got := dev.Served(); got != 1 {
+		t.Fatalf("device served = %d, want 1 (9 cache hits)", got)
 	}
 }

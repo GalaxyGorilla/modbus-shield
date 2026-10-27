@@ -10,7 +10,7 @@ prior Modbus knowledge is needed.
 |---|---|
 | [gateway.md](gateway.md) | You have one legacy device and want it protected — the standard retrofit deployment |
 | [multi-device.md](multi-device.md) | One box, several devices, different rules per device |
-| [operations.md](operations.md) | The box is deployed — day-2: install as a service, commission, monitor, troubleshoot, upgrade |
+| [operations.md](operations.md) | The box is deployed — day-2: install as a service, commission, monitor, reload the config in place, troubleshoot, upgrade |
 | [health.md](health.md) | You want to monitor the box itself from plant SCADA with the Modbus tooling you already have |
 | [tls.md](tls.md) | Clients sit on an untrusted network segment and the traffic to the box must be encrypted (optionally mTLS) |
 | [two-proxy.md](two-proxy.md) | Clients and device are in different sites/segments — the link between two boxes carries only TLS |

@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/GalaxyGorilla/modbus-shield/internal/acl"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,7 +36,8 @@ type Device struct {
 
 	// ReadOnly blocks all write function codes (5, 6, 15, 16, 21, 22, 23)
 	// with a proxy-generated Modbus exception (FC|0x80, code 0x01) — the
-	// device never sees the write.
+	// device never sees the write. Mutually exclusive with WritePolicy
+	// (which expresses finer-grained write rights).
 	ReadOnly bool `yaml:"read_only"`
 
 	// Allow is an optional client allow-list of IPs or CIDRs
@@ -125,6 +127,12 @@ type Device struct {
 	// device request. Health reads (health_unit_id) bypass this check.
 	MBAPS *MBAPSConfig `yaml:"mbaps"`
 
+	// WritePolicy, when set, restricts writes by unit/function code/
+	// address range instead of the coarse read_only switch. Denials are
+	// proxy-generated exception 0x02 (Illegal Data Address) and the
+	// device never sees the write. Mutually exclusive with ReadOnly.
+	WritePolicy *WritePolicyConfig `yaml:"write_policy"`
+
 	// RTUOverTCP, when true, makes the device leg speak bare Modbus RTU
 	// frames (unit address + PDU + CRC16) instead of MBAP (B7): for
 	// cheap serial-to-TCP converters that bridge raw serial over TCP
@@ -137,13 +145,13 @@ type Device struct {
 	// ReadCacheTTLMs, when set, enables the opt-in read cache (B8):
 	// successful FC 1-4 responses are served from memory for this long
 	// (keyed by unit ID + request PDU), shielding very slow devices from
-	// heavy polling. A cache hit generates NO device traffic (the device
-	// is only contacted on a miss), but the rate limiter runs BEFORE the
-	// cache lookup — a hit still consumes a rate token and is rejected
-	// with 0x06 when the limit is exhausted. Writes,
-	// exceptions and health reads are never cached. 0 = disabled (fully
-	// transparent semantics). NOTE: a cache makes responses stale by up
-	// to the TTL; only enable it for data that changes slowly.
+	// heavy polling. A cache hit generates NO device traffic and is
+	// answered BEFORE the rate limiters — the limiters protect the
+	// device, so a free answer costs no token and is never turned into
+	// 0x06. Writes, exceptions and health reads are never cached.
+	// 0 = disabled (fully transparent semantics). NOTE: a cache makes
+	// responses stale by up to the TTL; only enable it for data that
+	// changes slowly.
 	ReadCacheTTLMs int `yaml:"read_cache_ttl_ms"`
 
 	// Transparent enables bump-in-the-wire mode (B3, Linux-only): instead
@@ -169,6 +177,47 @@ type MBAPSConfig struct {
 	// extension) to the function codes that role may issue. A role not
 	// present here (and the NULL role) has no rights.
 	Roles map[string][]int `yaml:"roles"`
+}
+
+// WritePolicyConfig is an address-scoped write policy: which unit may
+// write which function code to which addresses. It is the fine-grained
+// counterpart of the coarse read_only switch (the two are mutually
+// exclusive: read_only already denies every write).
+//
+// A write is permitted only if no DENY rule matches it and (with the
+// default "deny") an ALLOW rule covers it. Deny rules match when the
+// request's address range intersects the rule's range; allow rules match
+// only when they CONTAIN the whole request range, so a multi-register
+// write can never straddle an allowed window. Rule order is irrelevant.
+// Writes whose address range cannot be parsed are denied. A denial is
+// answered with exception 0x02 (Illegal Data Address) — the spec's
+// "that address is not allowable" — and the device never sees the write.
+type WritePolicyConfig struct {
+	// Default is the verdict for a write no rule matches: "deny" (the
+	// default when empty) or "allow" (deny-list mode).
+	Default string `yaml:"default"`
+
+	// Rules is the rule set. At least one rule is required unless
+	// Default is "allow".
+	Rules []WriteRule `yaml:"rules"`
+}
+
+// WriteRule is one write-policy rule.
+type WriteRule struct {
+	// Unit, when set, restricts the rule to that client unit ID
+	// (pre-remap, i.e. the unit the client addressed). Omit = any unit.
+	Unit *int `yaml:"unit"`
+	// FC, when set, restricts the rule to those function codes. Entries
+	// must be write function codes (5, 6, 15, 16, 21, 22, 23). Omit =
+	// any write function code.
+	FC []int `yaml:"fc"`
+	// From/To are the inclusive address range (0..65535). Omit both to
+	// make the rule address-agnostic — required for FC 21 (file record),
+	// which carries no register address.
+	From *int `yaml:"from"`
+	To   *int `yaml:"to"`
+	// Action is "allow" (default when empty) or "deny".
+	Action string `yaml:"action"`
 }
 
 // TLSConfig configures front-leg TLS termination for a device.
@@ -354,6 +403,15 @@ func (c *Config) Validate() error {
 		if err := d.MBAPS.Validate(); err != nil {
 			return fmt.Errorf("config: %s: %w", label, err)
 		}
+		if err := d.WritePolicy.Validate(); err != nil {
+			return fmt.Errorf("config: %s: %w", label, err)
+		}
+		// read_only already denies every write; a write policy on top of
+		// it can never allow anything, so the combination is a config
+		// mistake rather than a defence-in-depth choice.
+		if d.ReadOnly && d.HasWritePolicy() {
+			return fmt.Errorf("config: %s: read_only and write_policy are mutually exclusive (read_only denies all writes)", label)
+		}
 		// B12: mbaps role authorization is only defined over mTLS
 		// (spec R-02/R-06: mutual authentication is mandatory).
 		if d.HasMBAPS() && !d.HasClientCA() {
@@ -427,6 +485,16 @@ func (d *Device) HealthUnitIDValue() uint8 { return *d.HealthUnitID }
 // HasMBAPS reports whether the mbaps role-authorization mode (B12) is
 // configured for this device.
 func (d *Device) HasMBAPS() bool { return d.MBAPS != nil }
+
+// HasWritePolicy reports whether an address-scoped write policy is
+// configured.
+func (d *Device) HasWritePolicy() bool { return d.WritePolicy != nil }
+
+// WritePolicyDefaultAllow reports the verdict for writes no rule matches
+// (only meaningful when HasWritePolicy() is true; empty Default = deny).
+func (d *Device) WritePolicyDefaultAllow() bool {
+	return d.WritePolicy != nil && d.WritePolicy.Default == "allow"
+}
 
 // MBAPSRoleRights returns the allowed function codes for a role (call
 // only when HasMBAPS() is true). ok=false means the role has no rights
@@ -536,4 +604,51 @@ func validIPorCIDR(s string) bool {
 	}
 	_, _, err := net.ParseCIDR(s)
 	return err == nil
+}
+
+// Validate checks a write policy block: the default and every rule action
+// are allow/deny, function codes are write function codes, and address
+// ranges are complete and ordered. A policy with no rules and the default
+// "deny" is rejected because it would block every write — that is what
+// read_only is for.
+func (w *WritePolicyConfig) Validate() error {
+	if w == nil {
+		return nil
+	}
+	switch w.Default {
+	case "", "deny", "allow":
+	default:
+		return fmt.Errorf("write_policy: default must be deny or allow (got %q)", w.Default)
+	}
+	if len(w.Rules) == 0 && w.Default != "allow" {
+		return fmt.Errorf("write_policy: at least one rule is required when default is deny")
+	}
+	for i := range w.Rules {
+		r := &w.Rules[i]
+		switch r.Action {
+		case "", "allow", "deny":
+		default:
+			return fmt.Errorf("write_policy: rules[%d]: action must be allow or deny (got %q)", i, r.Action)
+		}
+		if r.Unit != nil && (*r.Unit < 0 || *r.Unit > 255) {
+			return fmt.Errorf("write_policy: rules[%d]: unit must be 0-255", i)
+		}
+		for _, fc := range r.FC {
+			if fc < 0 || fc > 255 || !acl.IsWrite(uint8(fc)) {
+				return fmt.Errorf("write_policy: rules[%d]: fc %d is not a write function code (5, 6, 15, 16, 21, 22, 23)", i, fc)
+			}
+		}
+		if (r.From == nil) != (r.To == nil) {
+			return fmt.Errorf("write_policy: rules[%d]: from and to must be set together (or both omitted for an address-agnostic rule)", i)
+		}
+		if r.From != nil {
+			if *r.From < 0 || *r.From > 0xFFFF || *r.To < 0 || *r.To > 0xFFFF {
+				return fmt.Errorf("write_policy: rules[%d]: addresses must be 0-65535", i)
+			}
+			if *r.From > *r.To {
+				return fmt.Errorf("write_policy: rules[%d]: from (%d) must be <= to (%d)", i, *r.From, *r.To)
+			}
+		}
+	}
+	return nil
 }

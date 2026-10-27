@@ -158,9 +158,12 @@ func (g *gateway) serveHealth(req mbtcp.ADU) mbtcp.ADU {
 	return adu
 }
 
-// healthRegister returns one register of the health image.
+// healthRegister returns one register of the health image. The
+// configuration-derived registers read the live runtime snapshot, so a
+// reload is visible in the health image without a restart.
 func (g *gateway) healthRegister(addr int) uint16 {
 	h := g.health
+	rt := g.runtime()
 	switch addr {
 	case 0:
 		return healthMagic
@@ -198,14 +201,14 @@ func (g *gateway) healthRegister(addr int) uint16 {
 	case 14:
 		return h.reqRate.get()
 	case 15:
-		if g.dev.ReadOnly {
+		if rt.readOnly {
 			return 1
 		}
 		return 0
 	case 16:
-		return uint16(g.dev.MaxClients)
+		return uint16(rt.maxClients)
 	case 17:
-		return uint16(g.dev.RatePerSec)
+		return uint16(rt.sharedRate)
 	case 18:
 		return h.cacheHits.get()
 	}

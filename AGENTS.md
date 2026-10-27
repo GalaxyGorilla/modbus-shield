@@ -37,8 +37,9 @@ serial ports.
 | Language | **Go** (chosen deliberately: static single binary for appliance use, goroutines/channels map 1:1 onto the multiplexer, race detector + native fuzzing for the "well tested" bar; snmp-shield sibling synergy) |
 | Protocol scope | **Modbus TCP only** (v1) — no RTU framing, no local serial ports; unit-ID remap covers serial converters that expose Modbus TCP |
 | Primary shape | **Gateway reverse proxy** (clients repointed to the proxy); transparent bump-in-the-wire is backlog B3; two-proxy secured line is B2 |
-| Security v1 | **IP ACLs + function-code policy (read-only) + shielding limits** (conn cap + rate limit); TLS front leg is B1; per-role FC rights over mTLS (mbaps mode) is B12 |
+| Security v1 | **IP ACLs + write policy (read-only OR address-scoped rules) + shielding limits** (conn cap + rate limit); TLS front leg is B1; per-role FC rights over mTLS (mbaps mode) is B12 |
 | Caching | **None** — exactly transparent semantics (opt-in TTL cache is B8) |
+| Config changes | Live reload via **SIGHUP** for everything per-request (ACLs, write policy, limits, cache TTL, pacing, timeouts, remap, mbaps roles); listeners/device address/TLS need a restart and are reported as reload warnings |
 | Transport level | Parse the 7-byte MBAP header, forward the PDU as an **opaque blob** — vendor register-map/encoding chaos flows through untouched |
 | Correlation posture | **Strict on framing, liberal on correlation** — real devices deviate (wonky txn-ID echo, unit-ID swaps) |
 | Config | YAML per instance + no-YAML flags one-liner mode (field techs paste two lines) |
@@ -47,7 +48,44 @@ serial ports.
 ## 3. Status / Roadmap
 
 **Current state: BACKLOG COMPLETE + docs consistency pass + streamlining
-pass + identity rewording + portability/shielding hardening pass.**
+pass + identity rewording + portability/shielding hardening pass +
+write-policy/reload pass (B14).**
+
+Write-policy + reload pass (2026-10-27), the follow-up to the hardening
+pass (still no CI — user decision):
+
+- **Address-scoped write policy (B14):** `write_policy:` (YAML) /
+  `--write-range` + `--write-default` (flags). Rules scope by client unit
+  ID, write function code and inclusive address range. Evaluation is
+  deny-overrides + allow-must-cover (an allow must CONTAIN the whole
+  request range, so a multi-register write cannot straddle an allowed
+  window); order-independent; unparseable ranges denied; `read_only` and
+  `write_policy` are mutually exclusive. Denial = exception 0x02, metric
+  outcome `exception_policy`, health `incPolicy()`; the device never sees
+  it. Engine in `internal/acl/writepolicy.go`, compilation in
+  `internal/proxy/runtime.go`, e2e in
+  `internal/proxy/writepolicy_test.go`.
+- **SIGHUP config reload:** `internal/proxy/runtime.go` +
+  `reload.go`. Every config-derived per-request knob lives in a
+  `gatewayRuntime` struct swapped under an `RWMutex`; a reload compiles a
+  whole new snapshot and swaps it atomically (never a half-applied mix).
+  Applied: `allow`, `read_only`/`write_policy`, `max_clients`, both rate
+  limits, cache TTL, pacing, `lenient_correlation`, idle + request
+  timeouts, `device_unit_id`, `health_unit_id`, mbaps roles. Restart-only
+  (listener/device/TLS/transparent/RTU, added/removed devices): reported
+  as warnings, never silently ignored. A config that fails to load keeps
+  the running one. Handler loops re-read the snapshot AFTER the blocking
+  read — reading it before would delay every reload by one request for a
+  busy client and forever for an idle keeper (real bug caught by
+  `TestReloadWritePolicy`).
+- **Cache ordering reversed (deliberate):** the cache lookup now runs
+  BEFORE both rate limiters. The limiters protect the DEVICE; a hit never
+  touches it, so charging it a token only turned a free answer into 0x06.
+  Pinned by `TestGatewayCacheHitBypassesRateLimit` (was
+  `TestGatewayRateLimitBeforeCache`, which pinned the old behavior and
+  was rewritten, not deleted).
+- **`make interop` finally runs:** mbpoll installed on this machine;
+  the full real-client suite passes (see section 5).
 
 Hardening pass (2026-10-27), all driven by a self-review rather than new
 features — no CI was added (deliberate: this project stays CI-free and
@@ -126,6 +164,8 @@ govulncheck clean.**
 | B7: RTU-over-TCP device side (`rtu_over_tcp` + `--rtu-over-tcp`) | done (mbtcp RTU framing + upstream translation + tests + real-binary smoke) |
 | B8: opt-in TTL read cache (`read_cache_ttl_ms` + `--read-cache-ttl-ms`) | done (proxy/cache.go + tests + real-binary smoke; health register 18, map v2) |
 | B3: transparent bump-in-the-wire (`transparent: true` + `--transparent`, Linux-only) | done (origdst_linux.go + upstream per-conn target + tests + examples/transparent.md; design spike in docs/) |
+| B14: address-scoped write policy (`write_policy:` + `--write-range`/`--write-default`) | done (acl/writepolicy.go + proxy/runtime.go + e2e tests + examples/gateway.md + smoke-reload.sh) |
+| B14: SIGHUP config reload (`Runner.Reload` + gatewayRuntime snapshot) | done (proxy/runtime.go + reload.go + tests + deploy ExecReload + examples/operations.md) |
 
 ### Verification targets (from the plan)
 
@@ -136,7 +176,11 @@ govulncheck clean.**
 - Adversarial: garbage datagrams never kill the listener, oversized ADUs
   rejected, late/duplicate/mismatched transaction responses discarded.
 - In-Go fake Modbus device for all e2e; real-client interop (`mbpoll`)
-  gated with exit 77; parser fuzz targets with committed regression corpus.
+  now RUN and passing on this machine (`make interop`; still exits 77
+  where mbpoll is absent — that skip path is unchanged); parser fuzz
+  targets with committed regression corpus.
+- Real-binary smokes: `scripts/smoke-connid.sh` (B9), and
+  `scripts/smoke-reload.sh` (write policy + live SIGHUP, 2026-10-27).
 
 ## 4. Repository Layout
 
@@ -144,12 +188,12 @@ govulncheck clean.**
 cmd/modbus-shield/         main package; role via subcommand (gateway) + validate/selftest/genpsk/version
 internal/mbtcp/            MBAP + RTU framing (mbtcp.go, rtu.go + tests + FuzzParseADU/FuzzReadADU + corpora)
 internal/config/           YAML config + single-device flags mode (config.go + tests)
-internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, logger.go, ratelimit.go, health.go, cache.go, origdst_linux.go/origdst_other.go + fakedevice e2e
-internal/acl/              client IP allow-list + write-FC classifier (acl.go + tests)
+internal/proxy/            gateway core: gateway.go, upstream.go, runner.go, reload.go, runtime.go, logger.go, ratelimit.go, health.go, cache.go, mbaps.go, origdst_linux.go/origdst_other.go + fakedevice e2e
+internal/acl/              client IP allow-list + write-FC classifier + address-scoped write policy (acl.go, writepolicy.go + tests)
 internal/observ/           zap logging + Prometheus metrics (observ.go + tests; implements proxy.Metrics)
 internal/watchdog/         sd_notify wrapper (READY + watchdog pings; no-ops outside systemd)
-configs/                   example YAML templates
-scripts/                   interop-modbus.sh (real mbpoll), gen-certs.sh (throwaway PKI incl. mbaps role certs), fakedevice.py, smoke scripts, SBOM entry point
+configs/                   example YAML templates (write_policy + reload notes in gateway.yaml)
+scripts/                   interop-modbus.sh (real mbpoll), gen-certs.sh (throwaway PKI incl. mbaps role certs), fakedevice.py, smoke-connid.sh, smoke-reload.sh (write policy + live SIGHUP), SBOM entry point
 deploy/                    hardened systemd unit files
 examples/                  copy-paste walkthroughs: gateway.md, multi-device.md, operations.md (production guide), tls.md, two-proxy.md, mbaps.md, health.md, transparent.md
 ```
@@ -165,27 +209,39 @@ usually at `/usr/local/go/bin/go`);
 go.mod declares minimum **1.26.0** (CI-free project — tests run manually).
 
 **Latest local verification (2026-10-27, macOS/darwin arm64):** `go
-build ./...`, `go vet ./...`, `gofmt -l .` (clean) and `go test ./...
--race -timeout 240s` pass under Go 1.27.3; `staticcheck ./...` passes.
-The suite is now green OFF Linux too — two real defects were found and
-fixed in the hardening pass (see below): `transparent_test.go` called
-the Linux-only `parseOrigDst` without a build tag (the whole
-`internal/proxy` test binary failed to compile on macOS), and the
-watchdog's fake-systemd socket used `t.TempDir()`, whose macOS
-`/var/folders/...` path exceeds the 104-byte `sun_path` limit (bind
-EINVAL). Both are recorded because the previous verification ran only
-on Linux and therefore could not see them. The optional `make interop`
-suite still has not been run (`mbpoll` absent; exit 77 by design).
+build ./...`, `go vet ./...`, `GOOS=linux go vet ./...`, `gofmt -l .`
+(clean) and `go test ./... -race -timeout 240s` pass under Go 1.27.3;
+`staticcheck ./...` and `govulncheck ./...` pass (the latter reinstalled
+into `~/go/bin` during this pass). The suite is green OFF Linux too —
+two real defects were found and fixed in the earlier hardening pass (see
+below): `transparent_test.go` called the Linux-only `parseOrigDst`
+without a build tag (the whole `internal/proxy` test binary failed to
+compile on macOS), and the watchdog's fake-systemd socket used
+`t.TempDir()`, whose macOS `/var/folders/...` path exceeds the 104-byte
+`sun_path` limit (bind EINVAL). Both are recorded because the previous
+verification ran only on Linux and therefore could not see them.
 
-**Read-cache + rate-limiter ordering (pinned by
-TestGatewayRateLimitBeforeCache):** both rate limiters (per-client, then
-shared) run BEFORE the cache lookup — a cache hit avoids device traffic
-but still consumes a rate token and is rejected with 0x06 when the limit
-is exhausted. All cache-ordering claims (config.go field comment,
-cache.go package
-doc, BACKLOG.md B8 entry, README bullet) were re-audited and now state
-this consistently; the B3 spike doc's "if we build it" / "decision
-required" sections are explicitly framed as historical notes.
+**`make interop` NOW RUNS (2026-10-27):** mbpoll was installed via
+`brew install mbpoll` (1.5.4 / libmodbus 3.2.0) and the suite PASSES —
+FC3/FC4 reads, FC6 write, exception pass-through, unit-ID addressing, 8
+concurrent mbpolls over the single upstream connection, chain alive
+after the burst. This closes the long-standing "never actually run" gap;
+the earlier exit-77 skip note no longer applies on this machine.
+
+**Write policy + reload + cache-ordering reversal (B14, 2026-10-27):**
+`write_policy` (YAML) / `--write-range` + `--write-default` (flags) scope
+writes by client unit ID, function code and address range; evaluation is
+deny-overrides / allow-must-cover, unparseable ranges are denied, denials
+are exception 0x02 with the `exception_policy` metric outcome and
+`health.incPolicy()`. `SIGHUP` swaps a compiled `gatewayRuntime` snapshot
+in place. The cache lookup was **moved BEFORE both rate limiters** — a
+deliberate reversal of the earlier B8 ordering (a hit protects the
+device, so it costs no token; now pinned by
+`TestGatewayCacheHitBypassesRateLimit`). All docs/comments that stated
+the old ordering (config.go, cache.go, BACKLOG.md B8, README, AGENTS)
+were re-audited and now state the new one; the B3 spike doc's "if we
+build it" / "decision required" sections are explicitly framed as
+historical notes.
 
 ```bash
 go build ./...
@@ -283,11 +339,16 @@ or set `-timeout` on `go test` (network tests would hang without one).
   `device_addr`, `read_only`, `allow` (IPs/CIDRs), `max_clients` (def 16),
   `rate_per_sec`, `rate_per_client_per_sec`, `lenient_correlation`,
   `timeout_ms` (def 5000), `device_unit_id` (opt remap),
+  `write_policy.{default,rules[]}` (mutually exclusive with `read_only`),
   plus top-level `log.{level,format}` and `metrics_listen`. Validate
   enforces: ≥1 device, host:port syntax, unique listen addrs,
-  non-negative limits (both rates included), valid IP/CIDR entries.
+  non-negative limits (both rates included), valid IP/CIDR entries,
+  write-policy defaults/actions ∈ {allow, deny}, rule FCs are WRITE
+  function codes, from/to present together and ordered (0..65535), and
+  no empty default-deny policy.
   Accessors: `Device.RequestTimeout()`, `HasUnitRemap()`,
-  `UpstreamUnitID()`, `HasLenientCorrelation()`.
+  `UpstreamUnitID()`, `HasLenientCorrelation()`, `HasWritePolicy()`,
+  `WritePolicyDefaultAllow()`.
 - **`internal/proxy` gateway contract**: one `gateway` per config device
   = front-leg `Serve` loop + per-client `handleClient` lock-step loop
   (read one ADU -> forward -> write one ADU). All client traffic
@@ -444,7 +505,13 @@ or set `-timeout` on `go test` (network tests would hang without one).
   exception response PASSES the probe with a note (device answered on
   the wire = alive); only dial/read/txn-mismatch fail. `gateway` holds
   `*http.Server` for metrics in a plain local var; nil-safe
-  `ShutdownMetrics(nil)`. Tests set flag values through the flag
+  `ShutdownMetrics(nil)`. `--write-range` entries are parsed into
+  `config.WriteRule`s by `parseWriteRangeSpec` (grammar
+  `[!]UNIT:FCS:FROM[-TO]`, `*` wildcards, default deny when rules are
+  given) and then validated by `cfg.Validate()` like a YAML policy.
+  `gateway` handles SIGHUP separately from SIGINT/SIGTERM: the signal
+  goroutine loops (reload → continue), so the first HUP cannot consume
+  the shutdown watcher. Tests set flag values through the flag
   pointers (exactly as pflag Parse would), never via reflection.
 - **Fuzz targets** (`internal/mbtcp`): `FuzzParseADU` (strict single-frame
   parser) and `FuzzReadADU` (`fuzz_stream_test.go`, streaming entry point
@@ -550,15 +617,64 @@ or set `-timeout` on `go test` (network tests would hang without one).
   PDU (pre-remap; per-client, remap-independent since the unit ID lives
   in the header). Only non-exception responses to FC 1-4 (`isReadFC`)
   are stored; writes, exceptions, health reads never cached. In
-  `serve()` the lookup sits AFTER the rate limiter (a hit consumes no
-  rate token and generates NO device traffic; outcome label
-  `cache_hit`, health register 18 via `incCacheHit`); the store sits
+  `serve()` the lookup sits BEFORE both rate limiters — a hit generates
+  NO device traffic and therefore costs no rate token (ordering reversed
+  in B14; outcome label `cache_hit`, health register 18 via
+  `incCacheHit`); the store sits
   after a successful exchange, guarded by `isReadFC` &&
   `!resp.IsException()`. Cached responses are rebuilt with
   `NewADU(client txn, client unit, cached pdu)` — clients always see
   their own fresh transaction ID. Entry values are copied on insert and
   return; mutex-guarded map, lazy TTL expiry. 0 = fully transparent
   semantics.
+- **Write-policy contract (B14)** (`internal/acl/writepolicy.go` +
+  `config.WritePolicyConfig` + `newGatewayRuntime`): governs WRITES only
+  (reads always pass); `nil` policy = allow every write (nil-guard
+  pattern). `Allowed(unit, pdu)` evaluates the rule SET: a deny rule
+  matches on range INTERSECTION (touching any forbidden address rejects),
+  an allow rule only when it CONTAINS the whole request range; any
+  matching deny wins, then any matching allow, else `default`. Rule
+  order is irrelevant. `WriteRange(fc, pdu)` extracts the affected range
+  (FC5/6 one address; FC15/16 address+qty; FC22 one address; FC23 uses
+  the WRITE half, not the read half; FC21 has no address and needs an
+  unscoped rule) and returns ok=false for truncated PDUs, quantity 0 or
+  16-bit overflow — unparseable = denied. In `serve()` the check sits
+  after the health endpoint and mbaps, and after `read_only` (which stays
+  the coarse switch; the two are mutually exclusive in config), BEFORE
+  the cache and both rate limits (a denied write costs no token).
+  Denial = exception 0x02 Illegal Data Address + outcome
+  `exception_policy` + `health.incPolicy()`; the device never sees it.
+  Flags: `--write-range '[!]UNIT:FCS:FROM[-TO]'` (`*` wildcards, leading
+  `!` = deny) + `--write-default deny|allow` (default deny when rules are
+  given), parsed by `parseWriteRangeSpec`/`parseAddrRange`.
+- **Reload contract (B14)** (`internal/proxy/runtime.go` +
+  `reload.go`): everything config-derived that a request needs lives in
+  `gatewayRuntime` (readOnly, writePol, allow, maxClients, lim,
+  sharedRate, clientRate, cache, mbaps, healthUnit, idleTimeout, timeout,
+  unitRemap). `gateway.runtime()` copies it under `rtMu.RLock` (no I/O
+  under the lock); `setRuntime` swaps it whole, so a request sees ONE
+  coherent configuration, never a half-applied reload. `handleClient`
+  re-reads the snapshot AFTER `mbtcp.ReadADU` returns — reading it before
+  the blocking read would delay a reload by one request for a busy
+  client and indefinitely for an idle one (real bug; the idle deadline
+  still uses the pre-read snapshot). `Runner.Reload(cfg)` matches
+  gateways by `dev.Name`, compiles a new runtime, applies
+  `up.setRequestDelay`/`up.setLenient` (atomics — never take the exchange
+  mutex) and returns warnings for: restart-only fields (listen_addr,
+  extra_listen, device_addr, tls, device_tls, transparent, rtu_over_tcp),
+  enabling the health endpoint (disabling it is reloadable), devices
+  removed from the config
+  (still serving) and devices added (not running). A failed compile keeps
+  the previous runtime. A reload creates a FRESH read cache (entries do
+  not survive — a reload is also a cache flush), and the shared rate
+  bucket is rebuilt (full burst); the PER-CLIENT bucket is created per
+  connection, so a changed `rate_per_client_per_sec` applies to NEW
+  connections only. main handles SIGHUP only
+  with `--config` (flags
+  mode = logged no-op) and keeps running on a bad file. Deploy unit:
+  `ExecReload=/bin/kill -HUP $MAINPID`. Pinned by `TestReload*`,
+  `TestGatewayWritePolicy*` and `scripts/smoke-reload.sh` (real binary,
+  live SIGHUP).
 - **systemd watchdog contract (B11)** (`internal/watchdog`, wrapper on
   coreos/go-systemd/v22 `daemon`): `Interval()` = `SdWatchdogEnabled`
   (0 when not under systemd), `NotifyReady()` sends `READY=1`,

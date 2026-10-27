@@ -17,32 +17,26 @@ import (
 )
 
 // gateway is one listener<->device pair: it accepts front-leg clients,
-// enforces the IP allow-list and shielding limits (connection cap,
-// read-only policy), and multiplexes all client traffic over the single
-// upstream device connection.
+// enforces the IP allow-list, the write policy and the shielding limits
+// (connection cap, rate limits), and multiplexes all client traffic over
+// the single upstream device connection.
+//
+// Configuration is split in two: the immutable identity in dev (bound to
+// the listener and the device connection — changing it needs a restart)
+// and the swappable gatewayRuntime, which a SIGHUP reload replaces as a
+// whole (see Runner.Reload).
 type gateway struct {
 	dev config.Device
 	up  *upstream
 	log Logger
 
-	// allow is the parsed client IP allow-list; nil = any client.
-	allow *acl.List
+	// rtMu guards rt; readers copy the struct under RLock, so no I/O is
+	// ever done while holding the lock.
+	rtMu sync.RWMutex
+	rt   gatewayRuntime
 
-	// maxClients caps concurrent front-leg connections (shielding).
-	maxClients int64
-	clients    atomic.Int64
-
-	// lim enforces rate_per_sec on the front leg (shielding); nil when
-	// rate_per_sec is 0 (unlimited). It is a SHARED bucket: it caps total
-	// device traffic. Per-client fairness (one noisy client must not eat
-	// everyone's budget) is the separate per-client bucket created in
-	// handleClient from rate_per_client_per_sec.
-	lim *rateLimiter
-
-	// clientLimRate is the per-connection request rate (0 = unlimited),
-	// materialized as one rateLimiter per client connection. It bounds a
-	// single poller so it cannot consume the shared budget of the others.
-	clientLimRate int
+	// clients counts admitted front-leg connections (shielding cap).
+	clients atomic.Int64
 
 	// wg tracks client handler goroutines so Stop can drain in-flight
 	// requests instead of cutting responses off mid-write.
@@ -65,31 +59,20 @@ type gateway struct {
 	met Metrics
 
 	// health exposes the box's state as readable registers on a virtual
-	// unit-ID (B4); nil when disabled.
+	// unit-ID (B4); nil when disabled. The registry outlives reloads (the
+	// counters keep counting); only the unit ID it answers on is
+	// reloadable (rt.healthUnit).
 	health *healthRegistry
-
-	// healthUnitID is the virtual unit-ID health requests are addressed
-	// to (only meaningful when health != nil).
-	healthUnitID uint8
 
 	// connSeq hands out per-gateway connection IDs (B9) so client-side
 	// and device-side log lines correlate on one ID.
 	connSeq atomic.Uint64
-
-	// mbaps maps role names (from client certificates' mbaps role
-	// extension) to their allowed function codes (B12); nil when the
-	// mbaps mode is disabled.
-	mbaps map[string]map[uint8]bool
-
-	// cache serves repeated read responses from memory (B8, opt-in via
-	// read_cache_ttl_ms); nil when disabled.
-	cache *readCache
 }
 
 func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
-	allow, err := acl.NewList(dev.Allow)
+	rt, err := newGatewayRuntime(dev)
 	if err != nil {
-		return nil, fmt.Errorf("device %s: %w", dev.Name, err)
+		return nil, err
 	}
 	var tlsCfg *tls.Config
 	if dev.HasTLS() {
@@ -106,27 +89,14 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		}
 	}
 	var health *healthRegistry
-	var healthUnitID uint8
 	if dev.HasHealth() {
 		health = newHealthRegistry()
-		healthUnitID = dev.HealthUnitIDValue()
-	}
-	var mbaps map[string]map[uint8]bool
-	if dev.HasMBAPS() {
-		mbaps = make(map[string]map[uint8]bool, len(dev.MBAPS.Roles))
-		for role, codes := range dev.MBAPS.Roles {
-			set := make(map[uint8]bool, len(codes))
-			for _, fc := range codes {
-				set[uint8(fc)] = true
-			}
-			mbaps[role] = set
-		}
 	}
 	up := newUpstream(dev.DeviceAddr, dev.Name, log, met)
 	up.tlsDial = devTLS
-	up.requestDelay = dev.RequestDelay()
+	up.setRequestDelay(dev.RequestDelay())
 	up.rtuOverTCP = dev.HasRTUOverTCP()
-	up.lenient = dev.HasLenientCorrelation()
+	up.setLenient(dev.HasLenientCorrelation())
 	up.setUpstreamHealth(health)
 	if dev.HasTransparent() {
 		// B3: the upstream target is the client's original destination
@@ -134,20 +104,14 @@ func newGateway(dev config.Device, log Logger, met Metrics) (*gateway, error) {
 		up.origDST = originalDST
 	}
 	g := &gateway{
-		dev:           dev,
-		up:            up,
-		log:           log,
-		allow:         allow,
-		maxClients:    int64(dev.MaxClients),
-		cache:         newReadCache(dev.ReadCacheTTL()),
-		lim:           newRateLimiter(dev.RatePerSec),
-		clientLimRate: dev.RatePerClientPerSec,
-		tlsCfg:        tlsCfg,
-		met:           metricsOrNop(met),
-		health:        health,
-		healthUnitID:  healthUnitID,
-		mbaps:         mbaps,
-		conns:         make(map[net.Conn]struct{}),
+		dev:    dev,
+		up:     up,
+		log:    log,
+		rt:     rt,
+		tlsCfg: tlsCfg,
+		met:    metricsOrNop(met),
+		health: health,
+		conns:  make(map[net.Conn]struct{}),
 	}
 	up.connSeq = &g.connSeq
 	return g, nil
@@ -162,8 +126,9 @@ func (g *gateway) Serve(ln net.Listener) error {
 	if g.tlsCfg != nil {
 		ln = tls.NewListener(ln, g.tlsCfg)
 	}
+	rt := g.runtime()
 	g.log.Infof("gateway %s: listening on %s -> %s (read_only=%v max_clients=%d tls=%v)",
-		g.dev.Name, ln.Addr(), g.dev.DeviceAddr, g.dev.ReadOnly, g.maxClients, g.tlsCfg != nil)
+		g.dev.Name, ln.Addr(), g.dev.DeviceAddr, rt.readOnly, rt.maxClients, g.tlsCfg != nil)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -172,7 +137,7 @@ func (g *gateway) Serve(ln net.Listener) error {
 			}
 			return err // listener fatal; caller decides
 		}
-		if !g.admit(conn) {
+		if !g.admit(conn, g.runtime()) {
 			g.met.IncConnRejected()
 			g.health.incConnRejected()
 			continue
@@ -193,20 +158,22 @@ func (g *gateway) Serve(ln net.Listener) error {
 // admit applies the shielding limits and ACL gate to a fresh connection.
 // The connection is counted as part of the cap decision (atomic Add
 // returns the new value), so a burst of concurrent dials cannot slip
-// past max_clients before handler goroutines start. Returns false when
-// the connection was rejected (and closed).
-func (g *gateway) admit(conn net.Conn) bool {
+// past max_clients before handler goroutines start. rt is the runtime
+// snapshot the accept loop just read, so a reload takes effect for the
+// next connection. Returns false when the connection was rejected (and
+// closed).
+func (g *gateway) admit(conn net.Conn, rt gatewayRuntime) bool {
 	// n includes this connection: allowed while n <= max_clients.
-	if n := g.clients.Add(1); n > g.maxClients {
+	if n := g.clients.Add(1); n > rt.maxClients {
 		g.clients.Add(-1)
 		g.log.Warnf("gateway %s: rejecting %s: connection limit (%d) reached",
-			g.dev.Name, conn.RemoteAddr(), g.maxClients)
+			g.dev.Name, conn.RemoteAddr(), rt.maxClients)
 		conn.Close()
 		return false
 	}
-	if g.allow != nil {
+	if rt.allow != nil {
 		ip := remoteIP(conn)
-		if ip == nil || !g.allow.Allowed(ip) {
+		if ip == nil || !rt.allow.Allowed(ip) {
 			g.log.Warnf("gateway %s: rejecting %s: not in allow-list",
 				g.dev.Name, conn.RemoteAddr())
 			g.clients.Add(-1)
@@ -273,11 +240,6 @@ func (g *gateway) handleClient(conn net.Conn) {
 	remote := conn.RemoteAddr()
 	connID := g.connSeq.Add(1) // B9: correlate client + device log lines
 
-	// Per-CLIENT rate bucket (rate_per_client_per_sec): one poller must
-	// not be able to spend the shared budget of everyone else. nil when
-	// unset (nil-guarded like the shared limiter).
-	clientLim := newRateLimiter(g.clientLimRate)
-
 	// B12: in mbaps mode the client's role comes from its certificate.
 	// mTLS is mandatory in this mode (config validation enforces
 	// tls+client_ca), so the connection is always a *tls.Conn here. The
@@ -286,7 +248,8 @@ func (g *gateway) handleClient(conn net.Conn) {
 	// to every request on the connection (spec: role extracted at
 	// handshake, cached for the session).
 	var mbapsRights map[uint8]bool // nil = deny every device request
-	if g.mbaps != nil {
+	rt := g.runtime()
+	if rt.mbaps != nil {
 		tc, isTLS := conn.(*tls.Conn)
 		if !isTLS {
 			// Unreachable: mbaps config validation requires mTLS. A
@@ -303,7 +266,7 @@ func (g *gateway) handleClient(conn net.Conn) {
 			_ = conn.SetDeadline(time.Time{})
 			if certs := tc.ConnectionState().PeerCertificates; len(certs) > 0 {
 				role, ok := mbapsRole(certs[0])
-				mbapsRights = mbapsRightsFor(g.mbaps, role, ok)
+				mbapsRights = mbapsRightsFor(rt.mbaps, role, ok)
 				if ok {
 					g.log.Debugf("gateway %s: [conn %d] %s: mbaps role %q",
 						g.dev.Name, connID, remote, role)
@@ -314,13 +277,25 @@ func (g *gateway) handleClient(conn net.Conn) {
 			}
 		}
 	}
+	// Per-CLIENT rate bucket (rate_per_client_per_sec): one poller must
+	// not be able to spend the shared budget of everyone else. Created
+	// once per connection (a reconnect starts with a full bucket — a
+	// burst damper, not a quota); nil when unset.
+	clientLim := newRateLimiter(rt.clientRate)
 
 	for {
+		// The idleness deadline uses the configuration current when we
+		// start waiting. The runtime is re-read AFTER the read returns,
+		// because a handler parked in ReadADU holds a snapshot taken
+		// BEFORE a reload could happen — using it would delay every
+		// reload by one request (or indefinitely for an idle keeper).
+		rt = g.runtime()
+
 		// B6: reap idle clients. Only the read (waiting for the next
 		// request) is idle-bounded; an in-flight exchange has its own
 		// upstream deadline and response writes get writeTimeout.
-		if g.dev.HasIdleTimeout() {
-			conn.SetReadDeadline(deadlineFromNow(g.dev.IdleTimeout()))
+		if rt.idleTimeout > 0 {
+			conn.SetReadDeadline(deadlineFromNow(rt.idleTimeout))
 		} else {
 			conn.SetReadDeadline(time.Time{}) // no TTL: clear any prior deadline
 		}
@@ -331,8 +306,12 @@ func (g *gateway) handleClient(conn net.Conn) {
 			return
 		}
 
+		// Fresh snapshot: a SIGHUP reload takes effect for the NEXT
+		// request, even on a connection that sat idle across it.
+		rt = g.runtime()
+
 		g.inFlight.Add(1)
-		resp := g.serve(conn, req, connID, mbapsRights, clientLim)
+		resp := g.serve(conn, req, connID, mbapsRights, clientLim, rt)
 		err = writeADU(conn, resp)
 		g.inFlight.Add(-1)
 		if err != nil {
@@ -348,16 +327,16 @@ func (g *gateway) handleClient(conn net.Conn) {
 // log correlation; mbapsRights is the connection role's allowed function
 // code set (B12; nil = deny every device request, NULL role). clientLim
 // is this connection's own rate bucket (rate_per_client_per_sec; nil =
-// unlimited).
-func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights map[uint8]bool, clientLim *rateLimiter) mbtcp.ADU {
+// unlimited). rt is the runtime snapshot taken for this request.
+func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights map[uint8]bool, clientLim *rateLimiter, rt gatewayRuntime) mbtcp.ADU {
 	clientUnit := req.Header.UnitID
 
 	// Health endpoint: requests addressed to the virtual health unit-ID
 	// are answered by the proxy itself (B4) — before policy and rate
 	// limiting, so monitoring stays responsive during a shielding event.
-	if g.health != nil && clientUnit == g.healthUnitID {
+	if g.health != nil && rt.healthUnit != nil && clientUnit == *rt.healthUnit {
 		g.log.Debugf("gateway %s: [conn %d] %s: serving health unit %d",
-			g.dev.Name, connID, conn.RemoteAddr(), g.healthUnitID)
+			g.dev.Name, connID, conn.RemoteAddr(), *rt.healthUnit)
 		return g.serveHealth(req)
 	}
 
@@ -366,7 +345,7 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 	// every request; rejection = exception 0x01). A NULL role or a role
 	// without an entry has no rights. The device never sees a denied
 	// request.
-	if g.mbaps != nil && !mbapsRights[req.FunctionCode()] {
+	if rt.mbaps != nil && !mbapsRights[req.FunctionCode()] {
 		g.log.Infof("gateway %s: [conn %d] %s: mbaps denied FC %d (not authorized)",
 			g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode())
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionAuthZ)
@@ -375,7 +354,7 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 	}
 
 	// Read-only policy: reject writes locally; the device never sees them.
-	if g.dev.ReadOnly && acl.IsWrite(req.FunctionCode()) {
+	if rt.readOnly && acl.IsWrite(req.FunctionCode()) {
 		g.log.Infof("gateway %s: [conn %d] %s: blocked write FC %d (read-only)",
 			g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode())
 		g.met.ObserveRequest(g.dev.Name, outcomeExceptionPolicy)
@@ -383,37 +362,35 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 		return g.exception(req, clientUnit, mbtcp.ExceptionIllegalFunction)
 	}
 
-	// Rate limiting: shield the device from polling storms. Rejected
-	// requests get Server Device Busy and the device never sees them. The
-	// PER-CLIENT bucket is checked first: a client over its own limit must
-	// not charge the SHARED budget (otherwise one runaway poller would
-	// drain everyone else's tokens by being rejected). Both buckets are
-	// consumed only on admission, and a request is admitted only if both
-	// allow it.
-	if clientLim != nil && !clientLim.Allow() {
-		g.log.Warnf("gateway %s: [conn %d] %s: per-client rate limit (%d/s) exceeded, FC %d rejected",
-			g.dev.Name, connID, conn.RemoteAddr(), g.clientLimRate, req.FunctionCode())
-		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
-		g.health.incRate()
-		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
-	}
-	if g.lim != nil && !g.lim.Allow() {
-		g.log.Warnf("gateway %s: [conn %d] %s: rate limit (%d/s) exceeded, FC %d rejected",
-			g.dev.Name, connID, conn.RemoteAddr(), g.dev.RatePerSec, req.FunctionCode())
-		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
-		g.health.incRate()
-		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
+	// Address-scoped write policy: read_only answers "may anyone write at
+	// all", this answers "may this unit write these FCs at these
+	// addresses". A denial is exception 0x02 (Illegal Data Address) —
+	// the spec's "that address is not allowable" — and the device never
+	// sees the write. Checked before the rate limits so a blocked write
+	// never consumes a token.
+	if rt.writePol != nil && acl.IsWrite(req.FunctionCode()) && !rt.writePol.Allowed(clientUnit, req.PDU) {
+		from, to, hasRange, _ := acl.WriteRange(req.FunctionCode(), req.PDU)
+		if hasRange {
+			g.log.Infof("gateway %s: [conn %d] %s: blocked write FC %d addr %d..%d unit %d (write policy)",
+				g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode(), from, to, clientUnit)
+		} else {
+			g.log.Infof("gateway %s: [conn %d] %s: blocked write FC %d unit %d (write policy)",
+				g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode(), clientUnit)
+		}
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionPolicy)
+		g.health.incPolicy()
+		return g.exception(req, clientUnit, mbtcp.ExceptionIllegalDataAddr)
 	}
 
 	// Read cache (B8): repeated read requests within the TTL are answered
-	// from memory — no device traffic on a hit. NOTE: the rate limiter
-	// runs BEFORE this lookup, so a hit still consumes a rate token (a
-	// cache hit saves the device, not the rate budget; a client above its
-	// rate limit is rejected even when the answer is cached). The cache
-	// key uses the CLIENT's unit ID and request PDU
-	// (pre-remap), so remapped devices are cached per-client-unit.
-	if g.cache != nil && isReadFC(req.FunctionCode()) {
-		if pdu := g.cache.lookup(clientUnit, req.PDU); pdu != nil {
+	// from memory — no device traffic on a hit. The lookup runs BEFORE
+	// the rate limiters: the limiters exist to protect the DEVICE, and a
+	// cache hit never touches it, so charging it to the device budget
+	// would only turn a free answer into 0x06. The cache key uses the
+	// CLIENT's unit ID and request PDU (pre-remap), so remapped devices
+	// are cached per-client-unit.
+	if rt.cache != nil && isReadFC(req.FunctionCode()) {
+		if pdu := rt.cache.lookup(clientUnit, req.PDU); pdu != nil {
 			g.log.Debugf("gateway %s: [conn %d] %s: cache hit FC %d",
 				g.dev.Name, connID, conn.RemoteAddr(), req.FunctionCode())
 			g.met.ObserveRequest(g.dev.Name, outcomeCacheHit)
@@ -427,13 +404,35 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 		}
 	}
 
+	// Rate limiting: shield the device from polling storms. Rejected
+	// requests get Server Device Busy and the device never sees them. The
+	// PER-CLIENT bucket is checked first: a client over its own limit must
+	// not charge the SHARED budget (otherwise one runaway poller would
+	// drain everyone else's tokens by being rejected). Both buckets are
+	// consumed only on admission, and a request is admitted only if both
+	// allow it.
+	if clientLim != nil && !clientLim.Allow() {
+		g.log.Warnf("gateway %s: [conn %d] %s: per-client rate limit (%d/s) exceeded, FC %d rejected",
+			g.dev.Name, connID, conn.RemoteAddr(), rt.clientRate, req.FunctionCode())
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
+		g.health.incRate()
+		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
+	}
+	if rt.lim != nil && !rt.lim.Allow() {
+		g.log.Warnf("gateway %s: [conn %d] %s: rate limit (%d/s) exceeded, FC %d rejected",
+			g.dev.Name, connID, conn.RemoteAddr(), rt.sharedRate, req.FunctionCode())
+		g.met.ObserveRequest(g.dev.Name, outcomeExceptionRate)
+		g.health.incRate()
+		return g.exception(req, clientUnit, mbtcp.ExceptionServerBusy)
+	}
+
 	// Unit-ID remap: the device always sees the configured unit ID.
-	if g.dev.HasUnitRemap() {
-		req.Header.UnitID = g.dev.UpstreamUnitID()
+	if rt.unitRemap != nil {
+		req.Header.UnitID = *rt.unitRemap
 	}
 
 	start := time.Now()
-	resp, err := g.up.exchange(req, g.dev.RequestTimeout(), connID, conn)
+	resp, err := g.up.exchange(req, rt.timeout, connID, conn)
 	g.met.ObserveLatency(g.dev.Name, time.Since(start))
 	if err != nil {
 		g.log.Warnf("gateway %s: [conn %d] %s: upstream error: %v",
@@ -446,14 +445,14 @@ func (g *gateway) serve(conn net.Conn, req mbtcp.ADU, connID uint64, mbapsRights
 	}
 	g.met.ObserveRequest(g.dev.Name, outcomeForwarded)
 	g.health.incForwarded()
-	if g.dev.HasUnitRemap() {
+	if rt.unitRemap != nil {
 		resp.Header.UnitID = clientUnit
 	}
 	// Store successful read responses in the cache (B8). Keyed by the
 	// CLIENT's unit ID (pre-remap) + request PDU; the response PDU is
 	// remap-independent (unit ID lives in the header).
-	if g.cache != nil && isReadFC(req.FunctionCode()) && !resp.IsException() {
-		g.cache.store(clientUnit, req.PDU, resp.PDU)
+	if rt.cache != nil && isReadFC(req.FunctionCode()) && !resp.IsException() {
+		rt.cache.store(clientUnit, req.PDU, resp.PDU)
 	}
 	return resp
 }

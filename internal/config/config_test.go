@@ -850,3 +850,130 @@ devices:
 		t.Fatal("negative rate_per_client_per_sec: want error, got nil")
 	}
 }
+
+// TestWritePolicyParsing covers the address-scoped write policy schema:
+// deny-list and allow-list modes, optional unit/FC/range fields.
+func TestWritePolicyParsing(t *testing.T) {
+	path := writeTemp(t, `
+devices:
+  - name: plc
+    listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+    write_policy:
+      default: deny
+      rules:
+        - fc: [6, 16]
+          from: 0
+          to: 99
+          action: allow
+        - unit: 2
+          fc: [6]
+          from: 100
+          to: 199
+          action: deny
+        - fc: [21]
+          action: allow
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasWritePolicy() {
+		t.Fatal("HasWritePolicy() = false, want true")
+	}
+	if d.WritePolicyDefaultAllow() {
+		t.Fatal("WritePolicyDefaultAllow() = true, want false")
+	}
+	rules := d.WritePolicy.Rules
+	if len(rules) != 3 {
+		t.Fatalf("rules = %d, want 3", len(rules))
+	}
+	if rules[0].Unit != nil || len(rules[0].FC) != 2 || *rules[0].To != 99 {
+		t.Fatalf("rule 0 = %+v", rules[0])
+	}
+	if rules[1].Unit == nil || *rules[1].Unit != 2 || rules[1].Action != "deny" {
+		t.Fatalf("rule 1 = %+v", rules[1])
+	}
+	if rules[2].From != nil {
+		t.Fatal("rule 2 (address-agnostic FC21 rule) has a range")
+	}
+
+	// Deny-list mode: default allow, no rules required.
+	path = writeTemp(t, `
+devices:
+  - listen_addr: ":5020"
+    device_addr: "10.0.0.42:502"
+    write_policy:
+      default: allow
+      rules:
+        - fc: [6]
+          from: 8000
+          to: 8999
+          action: deny
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("load deny-list: %v", err)
+	}
+	if !cfg.Devices[0].WritePolicyDefaultAllow() {
+		t.Fatal("deny-list policy default = deny, want allow")
+	}
+}
+
+// TestWritePolicyValidateErrors covers the schema rules: read_only and
+// write_policy are exclusive, defaults/actions are allow|deny, FCs must be
+// write FCs, ranges must be complete and ordered, and an empty default-deny
+// policy is a config error.
+func TestWritePolicyValidateErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		dev  Device
+	}{
+		{"read_only + write policy", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502", ReadOnly: true,
+			WritePolicy: &WritePolicyConfig{Default: "allow"},
+		}},
+		{"empty default-deny policy", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502",
+			WritePolicy: &WritePolicyConfig{Default: "deny"},
+		}},
+		{"bad default", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502",
+			WritePolicy: &WritePolicyConfig{Default: "maybe"},
+		}},
+		{"bad action", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502",
+			WritePolicy: &WritePolicyConfig{Default: "allow", Rules: []WriteRule{{Action: "block"}}},
+		}},
+		{"read function code", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502",
+			WritePolicy: &WritePolicyConfig{Default: "deny", Rules: []WriteRule{{FC: []int{3}, Action: "allow"}}},
+		}},
+		{"half range", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502",
+			WritePolicy: &WritePolicyConfig{Default: "deny", Rules: []WriteRule{{To: intPtr(9), Action: "allow"}}},
+		}},
+		{"inverted range", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502",
+			WritePolicy: &WritePolicyConfig{Default: "deny", Rules: []WriteRule{{
+				From: intPtr(20), To: intPtr(10), Action: "allow",
+			}}},
+		}},
+		{"address out of range", Device{
+			ListenAddr: ":5020", DeviceAddr: "10.0.0.42:502",
+			WritePolicy: &WritePolicyConfig{Default: "deny", Rules: []WriteRule{{
+				From: intPtr(0), To: intPtr(70000), Action: "allow",
+			}}},
+		}},
+	}
+	for _, tc := range cases {
+		cfg := &Config{Devices: []Device{tc.dev}}
+		cfg.Defaults()
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("%s: expected error, got nil", tc.name)
+		}
+	}
+}
+
+func intPtr(n int) *int { return &n }

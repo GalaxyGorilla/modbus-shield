@@ -20,6 +20,7 @@ import (
 
 	"github.com/GalaxyGorilla/modbus-shield/internal/mbtcp"
 	"github.com/spf13/pflag"
+	"go.uber.org/zap"
 )
 
 // newFlags builds a cliFlags with default flag storage, then applies
@@ -431,4 +432,115 @@ func TestFlagsConfigShieldingKeys(t *testing.T) {
 	if !d.HasLenientCorrelation() {
 		t.Fatal("LenientCorrelation not applied from --lenient-correlation")
 	}
+}
+
+// TestParseWriteRangeSpec covers the --write-range grammar.
+func TestParseWriteRangeSpec(t *testing.T) {
+	rule, err := parseWriteRangeSpec("*:6:0-99")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if rule.Unit != nil || rule.Action != "allow" {
+		t.Fatalf("wildcard rule = %+v", rule)
+	}
+	if len(rule.FC) != 1 || rule.FC[0] != 6 {
+		t.Fatalf("fcs = %v", rule.FC)
+	}
+	if rule.From == nil || rule.To == nil || *rule.From != 0 || *rule.To != 99 {
+		t.Fatalf("range = %v..%v", rule.From, rule.To)
+	}
+
+	rule, err = parseWriteRangeSpec("!2:6,16:100-199")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if rule.Action != "deny" || rule.Unit == nil || *rule.Unit != 2 {
+		t.Fatalf("deny rule = %+v", rule)
+	}
+	if len(rule.FC) != 2 || rule.FC[0] != 6 || rule.FC[1] != 16 {
+		t.Fatalf("fcs = %v", rule.FC)
+	}
+
+	// Everything wildcarded: an FC/address-agnostic allow-everything rule.
+	rule, err = parseWriteRangeSpec("*:*:*")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if rule.Unit != nil || len(rule.FC) != 0 || rule.From != nil {
+		t.Fatalf("wildcard-everything rule = %+v", rule)
+	}
+
+	// Single address (no dash) is a one-address range.
+	rule, err = parseWriteRangeSpec("7:6:42")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if *rule.From != 42 || *rule.To != 42 {
+		t.Fatalf("single address range = %v..%v", *rule.From, *rule.To)
+	}
+
+	bad := []string{
+		"", "*:*", "*:6:0-99:extra", "x:*:*", "256:*:*", "*:6:0-x",
+		"*:6:10-1", "*:6:70000", "*:6,abc:0", "!",
+	}
+	for _, spec := range bad {
+		if _, err := parseWriteRangeSpec(spec); err == nil {
+			t.Fatalf("%q: expected error, got nil", spec)
+		}
+	}
+}
+
+// TestFlagsConfigWritePolicy wires --write-range/--write-default through
+// flagsConfig and validates the result like a real config.
+func TestFlagsConfigWritePolicy(t *testing.T) {
+	c := validFlags()
+	*c.writeRanges = []string{"*:6:0-99", "!2:6,16:100-199"}
+	cfg, err := flagsConfig(c)
+	if err != nil {
+		t.Fatalf("flagsConfig: %v", err)
+	}
+	d := cfg.Devices[0]
+	if !d.HasWritePolicy() {
+		t.Fatal("write policy not applied")
+	}
+	if d.WritePolicy.Default != "deny" {
+		t.Fatalf("default = %q, want deny (implicit)", d.WritePolicy.Default)
+	}
+	if len(d.WritePolicy.Rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(d.WritePolicy.Rules))
+	}
+
+	// Deny-list mode is explicit.
+	c = validFlags()
+	*c.writeDefault = "allow"
+	*c.writeRanges = []string{"!*:6:8000-8999"}
+	cfg, err = flagsConfig(c)
+	if err != nil {
+		t.Fatalf("flagsConfig deny-list: %v", err)
+	}
+	if !cfg.Devices[0].WritePolicyDefaultAllow() {
+		t.Fatal("--write-default allow not applied")
+	}
+
+	// read_only and a write policy are mutually exclusive.
+	c = validFlags()
+	*c.readOnly = true
+	*c.writeRanges = []string{"*:6:0-99"}
+	if _, err := flagsConfig(c); err == nil {
+		t.Fatal("read-only + write policy: expected error, got nil")
+	}
+
+	// Bad specs fail at flag-parse time.
+	c = validFlags()
+	*c.writeRanges = []string{"nonsense"}
+	if _, err := flagsConfig(c); err == nil {
+		t.Fatal("bad --write-range: expected error, got nil")
+	}
+}
+
+// TestReloadFlagsMode: SIGHUP has nothing to re-read in flags mode and
+// must be a logged no-op (nil runner proves it never touches it).
+func TestReloadFlagsMode(t *testing.T) {
+	c := validFlags()
+	reload(c, nil, zap.NewNop()) // must not panic
 }

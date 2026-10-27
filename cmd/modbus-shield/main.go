@@ -85,6 +85,8 @@ type cliFlags struct {
 	extraListen    *[]string
 	device         *string
 	readOnly       *bool
+	writeDefault   *string
+	writeRanges    *[]string
 	allow          *[]string
 	maxClients     *int
 	ratePerSec     *int
@@ -123,6 +125,8 @@ func register(fs *pflag.FlagSet) cliFlags {
 	c.extraListen = fs.StringArray("extra-listen", nil, "additional front-leg listener for the same device, ip:port (repeatable; shares one upstream connection and all limits with --listen)")
 	c.device = fs.String("device", "", "upstream legacy device address, ip:port")
 	c.readOnly = fs.Bool("read-only", false, "block all write function codes (device never sees writes)")
+	c.writeDefault = fs.String("write-default", "", "write policy verdict for addresses no --write-range covers: deny (default) or allow (deny-list mode)")
+	c.writeRanges = fs.StringArray("write-range", nil, "write policy rule [!]UNIT:FCS:FROM[-TO] (repeatable; * = any unit/any FC/any address; leading ! = deny; e.g. '*:6,16:0-99')")
 	c.allow = fs.StringArray("allow", nil, "client allow-list entry, IP or CIDR (repeatable; empty = any client)")
 	c.maxClients = fs.Int("max-clients", 0, "max concurrent client connections (0 = default 16)")
 	c.ratePerSec = fs.Int("rate-per-sec", 0, "max accepted requests per second for the whole device, all clients (0 = unlimited)")
@@ -212,6 +216,21 @@ func flagsConfig(c cliFlags) (*config.Config, error) {
 			Key:        *c.devTLSKey,
 		}
 	}
+	if *c.writeDefault != "" || len(*c.writeRanges) > 0 {
+		def := *c.writeDefault
+		if def == "" {
+			def = "deny" // safest default when rules are given
+		}
+		pol := &config.WritePolicyConfig{Default: def}
+		for _, spec := range *c.writeRanges {
+			rule, err := parseWriteRangeSpec(spec)
+			if err != nil {
+				return nil, err
+			}
+			pol.Rules = append(pol.Rules, rule)
+		}
+		dev.WritePolicy = pol
+	}
 	if len(*c.mbapsRoles) > 0 {
 		roles := make(map[string][]int, len(*c.mbapsRoles))
 		for _, spec := range *c.mbapsRoles {
@@ -259,6 +278,79 @@ func parseMBAPSRoleSpec(spec string) (string, []int, error) {
 		out = append(out, fc)
 	}
 	return role, out, nil
+}
+
+// parseWriteRangeSpec parses a --write-range entry into a policy rule.
+//
+// Grammar: [!]UNIT:FCS:FROM[-TO]
+//
+//	UNIT  = * (any client unit) or 0-255
+//	FCS   = * (any write FC) or a comma-separated list (5,6,15,16,21,22,23)
+//	FROM  = * (any address) or an address, optionally a range FROM-TO
+//	!     = deny rule (default is allow)
+//
+// Examples:
+//
+//	'*:6:0-99'        allow FC6 writes to registers 0..99 for every unit
+//	'!2:6,16:100-199' deny FC6/FC16 writes to 100..199 for unit 2
+//	'*:*:*'           allow every write (useful with --write-default deny)
+func parseWriteRangeSpec(spec string) (config.WriteRule, error) {
+	var rule config.WriteRule
+	s := strings.TrimSpace(spec)
+	rule.Action = "allow"
+	if strings.HasPrefix(s, "!") {
+		rule.Action = "deny"
+		s = strings.TrimSpace(s[1:])
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) != 3 {
+		return rule, fmt.Errorf("--write-range %q: want [!]UNIT:FCS:FROM[-TO]", spec)
+	}
+	if parts[0] != "*" {
+		u, err := strconv.Atoi(parts[0])
+		if err != nil || u < 0 || u > 255 {
+			return rule, fmt.Errorf("--write-range %q: unit must be * or 0-255", spec)
+		}
+		rule.Unit = &u
+	}
+	if parts[1] != "*" {
+		for _, part := range strings.Split(parts[1], ",") {
+			fc, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil {
+				return rule, fmt.Errorf("--write-range %q: bad function code %q", spec, part)
+			}
+			rule.FC = append(rule.FC, fc)
+		}
+	}
+	if parts[2] != "*" {
+		from, to, err := parseAddrRange(parts[2])
+		if err != nil {
+			return rule, fmt.Errorf("--write-range %q: %w", spec, err)
+		}
+		rule.From, rule.To = &from, &to
+	}
+	return rule, nil
+}
+
+// parseAddrRange parses "N" or "N-M" into an inclusive address range.
+func parseAddrRange(s string) (from, to int, err error) {
+	lo, hi, isRange := strings.Cut(s, "-")
+	if from, err = strconv.Atoi(strings.TrimSpace(lo)); err != nil {
+		return 0, 0, fmt.Errorf("bad address %q", lo)
+	}
+	to = from
+	if isRange {
+		if to, err = strconv.Atoi(strings.TrimSpace(hi)); err != nil {
+			return 0, 0, fmt.Errorf("bad address %q", hi)
+		}
+	}
+	if from < 0 || from > 0xFFFF || to < 0 || to > 0xFFFF {
+		return 0, 0, fmt.Errorf("addresses must be 0-65535")
+	}
+	if from > to {
+		return 0, 0, fmt.Errorf("from (%d) must be <= to (%d)", from, to)
+	}
+	return from, to, nil
 }
 
 // check is one selftest/validate result line.
@@ -523,15 +615,27 @@ func runGateway(args []string) int {
 		return 1
 	}
 
+	// SIGINT/SIGTERM shut down; SIGHUP re-reads the config file and
+	// applies the reloadable parts in place (see Runner.Reload). A bad
+	// file on SIGHUP is logged and the running configuration is kept —
+	// an operator typo must never take the proxy down.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	done := make(chan struct{})
 	go func() {
-		select {
-		case <-sigCh:
-			log.Info("shutdown signal received")
-			r.Stop()
-		case <-done:
+		for {
+			select {
+			case sig := <-sigCh:
+				if sig == syscall.SIGHUP {
+					reload(c, r, log)
+					continue
+				}
+				log.Info("shutdown signal received", zap.String("signal", sig.String()))
+				r.Stop()
+				return
+			case <-done:
+				return
+			}
 		}
 	}()
 	// Watchdog pings start after the runner is built; stop them with the
@@ -552,6 +656,32 @@ func runGateway(args []string) int {
 	return 0
 }
 
+// reload handles SIGHUP: re-read the config file and apply the reloadable
+// parts in place (ACLs, write policy, limits, cache TTL, pacing, idle
+// timeout, unit-ID remap, health unit ID, mbaps roles). Restart-only
+// changes are reported as warnings, not applied.
+//
+// In flags mode there is no file to re-read, so SIGHUP is a logged no-op.
+// A config error keeps the running configuration: an operator typo must
+// never take a working proxy down.
+func reload(c cliFlags, r *proxy.Runner, log *zap.Logger) {
+	if *c.configPath == "" {
+		log.Warn("SIGHUP ignored: reload requires --config (flags-mode settings come from the command line)")
+		return
+	}
+	cfg, err := config.Load(*c.configPath)
+	if err != nil {
+		log.Error("reload: new config invalid, keeping the running configuration", zap.Error(err))
+		return
+	}
+	warnings := r.Reload(cfg)
+	for _, w := range warnings {
+		log.Warn("reload: " + w)
+	}
+	log.Info("SIGHUP: configuration reloaded",
+		zap.Int("devices", len(cfg.Devices)), zap.Int("warnings", len(warnings)))
+}
+
 func usage(w *os.File) {
 	fmt.Fprintf(w, `modbus-shield — Modbus TCP security proxy
 
@@ -561,8 +691,11 @@ Usage (config file):
 Usage (flags, no config file — plug and play):
   modbus-shield gateway --listen <ip:port> --device <legacy-device:port> \
       [--read-only] [--allow <ip|cidr>]... [--max-clients <n>] \
-      [--rate-per-sec <n>] [--timeout-ms <ms>] [--device-unit-id <id>] \
+      [--write-default deny|allow] [--write-range <spec>]... \
+      [--rate-per-sec <n>] [--rate-per-client-per-sec <n>] \
+      [--lenient-correlation] [--timeout-ms <ms>] [--device-unit-id <id>] \
       [--request-delay-ms <ms>] [--idle-timeout-ms <ms>] \
+      [--read-cache-ttl-ms <ms>] [--rtu-over-tcp] [--transparent] \
       [--extra-listen <ip:port>]... \
       [--health-unit-id <id>] \
       [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem> \
@@ -595,6 +728,21 @@ nothing. With --health-unit-id the proxy answers requests to that virtual
 unit-ID itself with readable health registers (uptime, upstream state,
 counters) — plant SCADA monitors the proxy with the Modbus tooling it
 already has.
+
+Write policy (address-scoped, instead of all-or-nothing --read-only):
+  --write-range '[!]UNIT:FCS:FROM[-TO]'   repeatable; * = any
+    '*:6:0-99'         allow FC6 writes to registers 0..99, every unit
+    '!2:6,16:100-199'  deny FC6/FC16 writes to 100..199 for unit 2
+  --write-default deny|allow   verdict for uncovered writes (default deny)
+  Deny wins over allow; an allow must COVER the whole write range, so a
+  multi-register write can never straddle an allowed window. Denials are
+  answered with exception 0x02 (Illegal Data Address); the device never
+  sees them. Mutually exclusive with --read-only.
+
+Reload: send SIGHUP to re-read --config and apply ACLs, write policy,
+limits, cache TTL, pacing, idle timeout, unit-ID remap, health unit ID
+and mbaps roles in place (no client disconnect). Changes to listeners,
+device address and TLS need a restart and are logged as warnings.
 
 Other commands:
   modbus-shield validate [--config <file> | same flags as gateway] [--json]

@@ -18,6 +18,11 @@ Type=notify
 WatchdogSec=30
 # READY=1 + WATCHDOG=1 pings are sent by the binary (internal/watchdog).
 ExecStart=/usr/local/bin/modbus-shield gateway --config /etc/modbus-shield/gateway.yaml
+# SIGHUP re-reads the config and applies ACLs, write policy, limits, cache
+# TTL, pacing, unit-ID remap and mbaps roles in place (no dropped clients,
+# no device reconnect). Listener/device/TLS changes need a restart and are
+# logged as warnings: `systemctl reload modbus-shield-gateway`.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 

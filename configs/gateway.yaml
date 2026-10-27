@@ -5,6 +5,12 @@
 #   [N clients] --Modbus TCP--> [modbus-shield] --Modbus TCP--> [legacy device]
 #
 # Run:  modbus-shield gateway --config /etc/modbus-shield/gateway.yaml
+# Reload (no restart, no dropped clients): kill -HUP <pid>
+#   Applies: allow, read_only/write_policy, max_clients, rate limits,
+#   read_cache_ttl_ms, request_delay_ms, lenient_correlation,
+#   idle_timeout_ms, timeout_ms, device_unit_id, health_unit_id, mbaps roles.
+#   Needs a restart: listen_addr, extra_listen, device_addr, tls, device_tls,
+#   transparent, rtu_over_tcp, adding/removing devices (logged as warnings).
 # Or without a file (single device, flags only):
 #   modbus-shield gateway --listen :5020 --device 10.0.0.42:502
 
@@ -68,8 +74,23 @@ devices:
                                   # the front leg stays Modbus TCP)
     # read_cache_ttl_ms: 5000    # optional (B8): serve repeated FC 1-4
                                   # reads from memory for this long; the
-                                  # device is only contacted on a miss
-                                  # (hits still count against rate_per_sec)
+                                  # device is only contacted on a miss.
+                                  # A hit costs no rate token (the limiters
+                                  # exist to protect the device)
+    # write_policy:              # address-scoped writes instead of
+    #   default: deny            # read_only (they are exclusive): allow
+    #   rules:                   # ONLY FC6/FC16 to registers 0-99, block a
+    #     - fc: [6, 16]          # protected block, allow everything else
+    #       from: 0              # for a deny-list ... see examples/gateway.md
+    #       to: 99
+    #       action: allow
+    #     - unit: 2              # rules can be scoped per client unit ID
+    #       fc: [6]
+    #       from: 200
+    #       to: 255
+    #       action: deny
+    #     - fc: [21]             # omit from/to for FCs without an address
+    #       action: allow
 
   # Second device behind the same box, unrestricted reads/writes.
   - listen_addr: ":5021"

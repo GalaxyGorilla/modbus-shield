@@ -94,16 +94,38 @@ systemd appliance.
 
 ## 4. Changing configuration
 
-There is no hot reload — the config is read once at startup:
+Most changes apply **without a restart**: `SIGHUP` re-reads the config
+and swaps the per-request settings in place. Clients keep their
+connections and the device keeps its single upstream connection.
 
 ```bash
 # edit, then ALWAYS validate before applying:
 modbus-shield validate --config /etc/modbus-shield/gateway.yaml
 sudo cp gateway.yaml /etc/modbus-shield/gateway.yaml
-sudo systemctl restart modbus-shield-gateway
+sudo systemctl reload modbus-shield-gateway   # = kill -HUP <pid>
 ```
 
-A restart is boring by design:
+Applied by a reload: `allow`, `read_only` / `write_policy`,
+`max_clients`, `rate_per_sec`, `rate_per_client_per_sec`,
+`read_cache_ttl_ms`, `request_delay_ms`, `lenient_correlation`,
+`idle_timeout_ms`, `timeout_ms`, `device_unit_id`, `health_unit_id` and
+the `mbaps` role table. Security tightenings (a narrower allow-list, a
+new deny rule) take effect for the **next request / next connection**;
+already-open client connections are not torn down by a reload. A reload
+also starts with an **empty read cache** (it is a cache flush) and a
+**full shared rate bucket**; a changed `rate_per_client_per_sec` applies
+to **new** connections only (each connection owns its bucket).
+
+Needs a restart (the box logs a `reload: ... (restart required)` warning
+and keeps the old value): `listen_addr`, `extra_listen`, `device_addr`,
+`tls`, `device_tls`, `transparent`, `rtu_over_tcp`, and adding or
+removing `devices:` entries. A config that fails validation on SIGHUP is
+**rejected** — the running configuration stays active, so a typo never
+takes a working proxy down. Check the journal for `SIGHUP:
+configuration reloaded` and any warnings.
+
+Reloading by choice (for TLS certificates or a listener move) is boring
+by design:
 
 - the front-leg listener rebinds and waits; clients reconnect on their
   next poll (SCADA systems retry automatically),

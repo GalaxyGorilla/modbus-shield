@@ -242,6 +242,21 @@ func (f *fakeDevice) respond(hdr []byte, pdu []byte) []byte {
 			return nil
 		}
 		return f.frame(hdr, pdu)
+	case 16: // write multiple registers: response echoes fc/addr/qty
+		if len(pdu) < 5 {
+			return nil
+		}
+		return f.frame(hdr, pdu[:5])
+	case 23: // read/write multiple registers: echo the read part's data
+		if len(pdu) < 9 {
+			return nil
+		}
+		qty := binary.BigEndian.Uint16(pdu[3:5])
+		body := []byte{fc, byte(2 * qty)}
+		for i := uint16(0); i < qty; i++ {
+			body = append(body, 0xCA, 0xFE)
+		}
+		return f.frame(hdr, body)
 	default:
 		return f.exception(hdr, pdu, 0x01) // illegal function
 	}

@@ -13,10 +13,10 @@ import (
 // register addresses and quantities are inherently part of the key).
 // Only non-exception responses to read function codes are stored, so
 // writes, exceptions and health reads never hit the cache. A cache hit
-// avoids device traffic entirely (no device connection is made), but the
-// rate limiter still runs BEFORE the lookup (pinned by
-// TestGatewayRateLimitBeforeCache) — a hit saves the device, not the
-// rate budget.
+// generates no device traffic and is answered BEFORE the rate limiters
+// (pinned by TestGatewayCacheHitBypassesRateLimit): the limiters exist to
+// protect the DEVICE, and a hit never touches it, so a free answer must
+// not consume a token or be turned into 0x06.
 //
 // Concurrency: the map is guarded by a mutex; the cache is best-effort
 // and safe under concurrent access. Entry values are response PDUs

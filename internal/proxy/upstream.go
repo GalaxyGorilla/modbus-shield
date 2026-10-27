@@ -49,7 +49,11 @@ type upstream struct {
 	// requestDelay, when > 0, enforces a minimum gap between consecutive
 	// requests toward the device (request_delay_ms; B5 — picky legacy
 	// devices that choke on back-to-back traffic). 0 = unpaced.
-	requestDelay time.Duration
+	//
+	// Reloadable, so it is stored as nanoseconds in an atomic and read
+	// once per exchange (setRequestDelay); the reload never has to take
+	// the exchange mutex.
+	requestDelayNanos atomic.Int64
 
 	// lastRequest is when the last exchange happened; used by the B5
 	// pacing logic.
@@ -68,7 +72,9 @@ type upstream struct {
 	// Framing stays strict — only correlation is tolerant. Safe because
 	// exactly one request is ever in flight on this connection; the
 	// response is rewritten to the client's transaction ID either way.
-	lenient bool
+	//
+	// Reloadable (setLenient), hence the atomic.
+	lenient atomic.Bool
 
 	// origDST, when set, resolves the upstream target per CLIENT
 	// connection (B3 transparent mode): the client's conntrack
@@ -114,6 +120,23 @@ func (u *upstream) setUpstreamHealth(h *healthRegistry) {
 	u.health = h
 }
 
+// setRequestDelay sets the B5 inter-request pacing (reloadable).
+func (u *upstream) setRequestDelay(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	u.requestDelayNanos.Store(int64(d))
+}
+
+// requestDelay returns the current B5 pacing gap.
+func (u *upstream) requestDelay() time.Duration {
+	return time.Duration(u.requestDelayNanos.Load())
+}
+
+// setLenient enables/disables lenient device-leg correlation
+// (reloadable).
+func (u *upstream) setLenient(v bool) { u.lenient.Store(v) }
+
 // exchange forwards req to the device and returns the matching response.
 // timeout bounds the whole exchange (dial retries included). connID is
 // the front-leg connection ID (B9) that caused this exchange; it is
@@ -130,15 +153,20 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64,
 
 	deadline := time.Now().Add(timeout)
 
+	// Snapshot the reloadable knobs once per exchange, so a SIGHUP in the
+	// middle of an exchange cannot change behavior halfway through.
+	delay := u.requestDelay()
+	lenient := u.lenient.Load()
+
 	// B5 pacing: enforce a minimum gap between consecutive requests
 	// toward the device. Under u.mu, so the gap is measured across ALL
 	// client requests multiplexed onto this connection — exactly the
 	// serialization point a picky device cares about. Charged against
 	// the exchange deadline (a slow-paced device is a slow exchange).
-	if u.requestDelay > 0 && !u.lastRequest.IsZero() {
-		if wait := u.requestDelay - time.Since(u.lastRequest); wait > 0 {
+	if delay > 0 && !u.lastRequest.IsZero() {
+		if wait := delay - time.Since(u.lastRequest); wait > 0 {
 			u.log.Debugf("device %s: [conn %d] pacing %v between requests",
-				u.addr, connID, u.requestDelay)
+				u.addr, connID, delay)
 			time.Sleep(wait)
 		}
 	}
@@ -181,7 +209,7 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64,
 		u.drop(conn)
 		return mbtcp.ADU{}, fmt.Errorf("write to device: %w", err)
 	}
-	opts := mbtcp.ReadOptions{AllowForeignProtocolID: u.lenient}
+	opts := mbtcp.ReadOptions{AllowForeignProtocolID: lenient}
 	for {
 		conn.SetReadDeadline(deadline)
 		resp, err := mbtcp.ReadADUWith(conn, opts)
@@ -190,7 +218,7 @@ func (u *upstream) exchange(req mbtcp.ADU, timeout time.Duration, connID uint64,
 			return mbtcp.ADU{}, fmt.Errorf("read from device: %w", err)
 		}
 		if resp.Header.TransactionID != req.Header.TransactionID {
-			if !u.lenient {
+			if !lenient {
 				// Late/stale response from an earlier timed-out request.
 				// The stream is frame-aligned, so skipping is safe.
 				u.log.Debugf("device %s: [conn %d] discarding stale response (txn %d, want %d)",

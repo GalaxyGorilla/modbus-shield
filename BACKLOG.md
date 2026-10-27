@@ -1,9 +1,34 @@
 # BACKLOG — modbus-shield
 
-All items are done. The last one (B3) landed after a design spike
-(docs/b3-transparent-mode.md). Kept for reference.
+All items are done. The last ones (write policy + live config reload,
+B14) landed as a follow-up hardening pass. Kept for reference.
 
 ## Done (kept for reference)
+
+- ~~B14 address-scoped write policy + SIGHUP config reload~~ — **done**
+  (2026-10-27): `write_policy` (YAML) / `--write-range` + `--write-default`
+  (flags) replace the all-or-nothing `read_only` switch with rules scoped
+  by client unit ID, function code and inclusive address range. Evaluation
+  is deny-overrides and allow-must-cover (an allow rule must contain the
+  WHOLE request range, so a multi-register write can never straddle an
+  allowed window); rule order is irrelevant. Unparseable write ranges
+  (truncated PDU, quantity 0, 16-bit overflow) are denied. Denials are
+  exception 0x02 (Illegal Data Address), reuse the `exception_policy`
+  metric outcome + `health.incPolicy()`, and never reach the device.
+  `read_only` + `write_policy` is a config error. `SIGHUP` re-reads
+  `--config` and swaps a compiled `gatewayRuntime` snapshot (ACLs, write
+  policy, read-only, conn cap, rate limits, cache TTL, pacing, lenient
+  correlation, idle timeout, request timeout, unit-ID remap, health unit
+  ID, mbaps roles) in place — no client disconnect, no device reconnect;
+  restart-only changes (listen_addr, extra_listen, device_addr, tls,
+  device_tls, transparent, rtu_over_tcp, added/removed devices) are
+  reported as warnings. A config that fails validation on SIGHUP is
+  rejected and the running configuration stays. Cache ordering was
+  **reversed** in the same pass: a cache hit is now answered BEFORE the
+  rate limiters (they protect the device; a hit never touches it).
+  Pinned by `TestWritePolicy*` (acl), `TestGatewayWritePolicy*`,
+  `TestReload*`, `TestGatewayCacheHitBypassesRateLimit`, cmd flag tests
+  and `scripts/smoke-reload.sh` (real binary + SIGHUP).
 
 - ~~B13 hardening pass: portability, lenient correlation, per-client
   limits, fairness, drain~~ — **done** (2026-10-27, self-review driven,
@@ -23,8 +48,10 @@ All items are done. The last one (B3) landed after a design spike
   `TestLenientCorrelationAcceptsForeignTxn`, `TestForeignProtocolID`,
   `TestGatewayPerClientRateLimit`, `TestGatewayFairScheduling` and
   `TestShutdownDrainsInFlightRequest`. `make test` now also gates on
-  `gofmt -l`. Still open (deliberately, not scheduled): register-range
-  write policy, config reload without a restart, CI.
+  `gofmt -l`. The three items left open here (register-range write
+  policy, config reload without a restart, CI) were followed up as:
+  write policy + reload landed in B14 below; CI stays out deliberately
+  (user decision — checks run manually via `make`).
 
 - ~~B3 Transparent bump-in-the-wire mode~~ — **done**: `transparent: true`
   (or `--transparent`, Linux-only). The gateway forwards to the client's
@@ -50,10 +77,11 @@ All items are done. The last one (B3) landed after a design spike
   shielding very slow devices from heavy polling. Cache key = client
   unit ID + request PDU (per-client, remap-independent); only
   non-exception read responses are stored; cached responses carry the
-  client's fresh transaction ID and generate NO device traffic (but the
-  rate limiter still runs first — hits consume rate tokens, pinned by
-  TestGatewayRateLimitBeforeCache); writes and exceptions are never
-  cached; mutex-guarded
+  client's fresh transaction ID and generate NO device traffic. Ordering
+  was REVERSED in B14: the lookup now runs BEFORE both rate limiters, so
+  a hit costs no rate token and is never rejected with 0x06 (pinned by
+  `TestGatewayCacheHitBypassesRateLimit`); writes and exceptions are
+  never cached; mutex-guarded
   map with lazy TTL expiry. Metric outcome `cache_hit` + health register
   18 (cache hits, 16-bit wrap; register map version bumped to 2). 0 =
   disabled (fully transparent semantics). Verified by unit tests
