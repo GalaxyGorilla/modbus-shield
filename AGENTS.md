@@ -70,6 +70,11 @@ Post-backlog correctness pass (2026-10-31):
   deployment failed commissioning. `proxy.ProbeDevice` now reuses the
   production TLS, RTU framing and lenient-correlation path; mTLS and
   RTU-over-TCP probes are independently pinned in the command tests.
+- **systemd readiness follows listener readiness:** `READY=1` is emitted only
+  after every configured front door has bound. Previously a bind conflict
+  notified systemd that the service was ready immediately before exiting.
+  `Runner.Ready` exposes the all-bound edge; a real unixgram
+  `NOTIFY_SOCKET` test pins that startup failures emit no readiness message.
 
 Write-policy + reload pass (2026-10-27), the follow-up to the hardening
 pass (still no CI — user decision):

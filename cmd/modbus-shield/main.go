@@ -610,12 +610,26 @@ func runGateway(args []string) int {
 		return 1
 	}
 
+	// Bind every listener before announcing readiness. Run blocks while
+	// serving, so start it in the background and distinguish a startup
+	// failure from the all-listeners-bound edge.
+	runErr := make(chan error, 1)
+	go func() { runErr <- r.Run() }()
+	select {
+	case err = <-runErr:
+		observ.ShutdownMetrics(metricsSrv)
+		log.Error("proxy exited before readiness", zap.Error(err))
+		return 1
+	case <-r.Ready():
+	}
+
 	// SIGINT/SIGTERM shut down; SIGHUP re-reads the config file and
 	// applies the reloadable parts in place (see Runner.Reload). A bad
 	// file on SIGHUP is logged and the running configuration is kept —
 	// an operator typo must never take the proxy down.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -633,15 +647,15 @@ func runGateway(args []string) int {
 			}
 		}
 	}()
-	// Watchdog pings start after the runner is built; stop them with the
-	// same done channel the signal watcher uses.
-	if wd := watchdog.Interval(); wd > 0 {
-		go watchdog.Start(wd, done)
-	}
 	if _, err := watchdog.NotifyReady(); err != nil {
 		log.Warn("sd_notify READY failed", zap.Error(err))
 	}
-	err = r.Run()
+	// Watchdog pings start only after every front listener is bound; stop
+	// them with the same done channel the signal watcher uses.
+	if wd := watchdog.Interval(); wd > 0 {
+		go watchdog.Start(wd, done)
+	}
+	err = <-runErr
 	close(done)
 	observ.ShutdownMetrics(metricsSrv)
 	if err != nil {

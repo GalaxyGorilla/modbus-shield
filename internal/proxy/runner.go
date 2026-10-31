@@ -37,6 +37,10 @@ func NewRunner(cfg *config.Config, log Logger, met Metrics) (*Runner, error) {
 	return r, nil
 }
 
+// Ready closes after every configured listener has bound successfully. If Run
+// returns first, startup failed and the runner must not be advertised ready.
+func (r *Runner) Ready() <-chan struct{} { return r.bound }
+
 // listenerAddrs returns every front-leg address for a gateway: the
 // primary listen_addr plus any extra_listen entries.
 func listenerAddrs(gw *gateway) []string {

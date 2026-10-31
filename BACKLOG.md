@@ -17,6 +17,9 @@ B14) landed as a follow-up hardening pass. Kept for reference.
   the production device-side TLS, RTU-over-TCP and lenient-correlation path
   instead of always sending plain MBAP. The documented front-box mTLS selftest
   now actually validates the certificate chain and far-box handshake.
+- **Accurate systemd readiness (2026-10-31):** `READY=1` is sent only after
+  every configured listener binds. A startup bind failure now exits without
+  briefly advertising a ready service.
 
 ## Done (kept for reference)
 

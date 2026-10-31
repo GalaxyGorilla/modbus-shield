@@ -300,6 +300,50 @@ func TestSelftestProbeRefused(t *testing.T) {
 	}
 }
 
+func TestGatewayDoesNotNotifyReadyBeforeBind(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy gateway port: %v", err)
+	}
+	defer occupied.Close()
+
+	tmp, err := os.CreateTemp("/tmp", "modbus-shield-notify-")
+	if err != nil {
+		t.Fatalf("notify path: %v", err)
+	}
+	notifyPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(notifyPath)
+	t.Cleanup(func() { _ = os.Remove(notifyPath) })
+	addr, err := net.ResolveUnixAddr("unixgram", notifyPath)
+	if err != nil {
+		t.Fatalf("resolve notify socket: %v", err)
+	}
+	notify, err := net.ListenUnixgram("unixgram", addr)
+	if err != nil {
+		t.Fatalf("listen notify socket: %v", err)
+	}
+	defer notify.Close()
+	t.Setenv("NOTIFY_SOCKET", notifyPath)
+	t.Setenv("WATCHDOG_USEC", "")
+
+	rc := runGateway([]string{
+		"--listen", occupied.Addr().String(),
+		"--device", "127.0.0.1:1",
+		"--log-level", "error",
+	})
+	if rc == 0 {
+		t.Fatal("gateway with occupied listener returned success")
+	}
+	if err := notify.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 256)
+	if n, _, err := notify.ReadFromUnix(buf); err == nil {
+		t.Fatalf("systemd was notified before bind failure: %q", buf[:n])
+	}
+}
+
 func TestValidateSelftestInvalidConfig(t *testing.T) {
 	// validate with no listen/device must fail cleanly (exit path 1).
 	c := newFlags(func(c cliFlags) { *c.listen = ""; *c.device = "" })
