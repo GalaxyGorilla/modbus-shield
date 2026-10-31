@@ -49,7 +49,22 @@ serial ports.
 
 **Current state: BACKLOG COMPLETE + docs consistency pass + streamlining
 pass + identity rewording + portability/shielding hardening pass +
-write-policy/reload pass (B14).**
+write-policy/reload pass (B14) + multi-device/reload correctness fixes.**
+
+Post-backlog correctness pass (2026-10-31):
+
+- **Multi-device `extra_listen` ownership fixed:** `Runner.Run` kept one flat
+  listener slice but indexed it by gateway number. Once an earlier device had
+  an extra listener, the next gateway also served that extra port while its own
+  primary port was bound but never accepted. Listeners now retain their gateway
+  owner explicitly. `TestExtraListenMultiDeviceRouting` uses two distinct
+  upstream devices and pins every primary/extra door to the right one.
+- **Live MBAPS revocation fixed:** the certificate role remains session
+  identity, but its function-code rights are resolved from the current runtime
+  snapshot for every request. Removing FC6 on SIGHUP therefore denies the next
+  write on an already-established mTLS connection; previously that connection
+  retained its old write rights indefinitely. Pinned by
+  `TestReloadMBAPSRevokesEstablishedSession`.
 
 Write-policy + reload pass (2026-10-27), the follow-up to the hardening
 pass (still no CI — user decision):

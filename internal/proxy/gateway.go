@@ -244,10 +244,12 @@ func (g *gateway) handleClient(conn net.Conn) {
 	// mTLS is mandatory in this mode (config validation enforces
 	// tls+client_ca), so the connection is always a *tls.Conn here. The
 	// handshake happens eagerly (bounded) in this handler goroutine —
-	// the accept loop is never blocked — and the extracted role applies
-	// to every request on the connection (spec: role extracted at
-	// handshake, cached for the session).
-	var mbapsRights map[uint8]bool // nil = deny every device request
+	// the accept loop is never blocked. The role identity is cached for
+	// the TLS session, while its rights are resolved from the current
+	// runtime for every request so a SIGHUP revocation takes effect on
+	// established connections.
+	var mbapsRoleName string
+	var mbapsRolePresent bool
 	rt := g.runtime()
 	if rt.mbaps != nil {
 		tc, isTLS := conn.(*tls.Conn)
@@ -265,11 +267,10 @@ func (g *gateway) handleClient(conn net.Conn) {
 			}
 			_ = conn.SetDeadline(time.Time{})
 			if certs := tc.ConnectionState().PeerCertificates; len(certs) > 0 {
-				role, ok := mbapsRole(certs[0])
-				mbapsRights = mbapsRightsFor(rt.mbaps, role, ok)
-				if ok {
+				mbapsRoleName, mbapsRolePresent = mbapsRole(certs[0])
+				if mbapsRolePresent {
 					g.log.Debugf("gateway %s: [conn %d] %s: mbaps role %q",
-						g.dev.Name, connID, remote, role)
+						g.dev.Name, connID, remote, mbapsRoleName)
 				} else {
 					g.log.Infof("gateway %s: [conn %d] %s: mbaps NULL role (no role extension)",
 						g.dev.Name, connID, remote)
@@ -309,6 +310,7 @@ func (g *gateway) handleClient(conn net.Conn) {
 		// Fresh snapshot: a SIGHUP reload takes effect for the NEXT
 		// request, even on a connection that sat idle across it.
 		rt = g.runtime()
+		mbapsRights := mbapsRightsFor(rt.mbaps, mbapsRoleName, mbapsRolePresent)
 
 		g.inFlight.Add(1)
 		resp := g.serve(conn, req, connID, mbapsRights, clientLim, rt)

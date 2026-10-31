@@ -132,6 +132,65 @@ func TestExtraListenSharedCap(t *testing.T) {
 	}
 }
 
+// TestExtraListenMultiDeviceRouting pins listener ownership when an earlier
+// device has extra front doors. The flat listener slice must not be indexed
+// by gateway number: after an extra listener, those offsets no longer match.
+func TestExtraListenMultiDeviceRouting(t *testing.T) {
+	devA := newFakeDeviceCfg(t, fakeDeviceCfg{UnitValues: true})
+	devB := newFakeDeviceCfg(t, fakeDeviceCfg{UnitValues: true})
+	cfg := &config.Config{Devices: []config.Device{
+		{
+			Name:         "a",
+			ListenAddr:   "127.0.0.1:0",
+			ExtraListen:  []string{"127.0.0.1:0"},
+			DeviceAddr:   devA.Addr(),
+			DeviceUnitID: ptrUnit(10),
+		},
+		{
+			Name:         "b",
+			ListenAddr:   "127.0.0.1:0",
+			DeviceAddr:   devB.Addr(),
+			DeviceUnitID: ptrUnit(20),
+		},
+	}}
+	cfg.Defaults()
+	r, err := NewRunner(cfg, nopLogger{}, nil)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	go func() { _ = r.Run() }()
+	t.Cleanup(r.Stop)
+	<-r.bound
+
+	if len(r.lns) != 3 {
+		t.Fatalf("want 3 bound listeners, got %d", len(r.lns))
+	}
+	tests := []struct {
+		name string
+		addr string
+		want uint16
+	}{
+		{"a-primary", r.lns[0].Addr().String(), 0xCA0A},
+		{"a-extra", r.lns[1].Addr().String(), 0xCA0A},
+		{"b-primary", r.lns[2].Addr().String(), 0xCA14},
+	}
+	for _, tc := range tests {
+		got, err := readReg(t, tc.addr)
+		if err != nil {
+			t.Fatalf("%s read: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Fatalf("%s returned %#04x, want %#04x", tc.name, got, tc.want)
+		}
+	}
+	if got := devA.Served(); got != 2 {
+		t.Fatalf("device a served %d requests, want 2", got)
+	}
+	if got := devB.Served(); got != 1 {
+		t.Fatalf("device b served %d requests, want 1", got)
+	}
+}
+
 // TestExtraListenConfigErrors covers the validate rules for extra
 // listeners: bad syntax, duplicate of the primary address, and
 // collisions with other devices' addresses.

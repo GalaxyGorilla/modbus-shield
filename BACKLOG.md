@@ -3,6 +3,17 @@
 All items are done. The last ones (write policy + live config reload,
 B14) landed as a follow-up hardening pass. Kept for reference.
 
+## Post-backlog correctness fixes
+
+- **Multi-device `extra_listen` routing (2026-10-31):** listener ownership is
+  tracked explicitly. The old flat-slice indexing overlapped gateways after an
+  earlier device added an extra listener, leaving a later primary port
+  unserved and allowing the wrong gateway to accept the extra port.
+- **MBAPS rights reload on live sessions (2026-10-31):** the authenticated
+  certificate role stays fixed for the TLS session, but its rights are looked
+  up from the current SIGHUP runtime snapshot per request. Revocations now
+  affect established clients immediately.
+
 ## Done (kept for reference)
 
 - ~~B14 address-scoped write policy + SIGHUP config reload~~ — **done**

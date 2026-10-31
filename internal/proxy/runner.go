@@ -49,6 +49,7 @@ func listenerAddrs(gw *gateway) []string {
 // Run binds all listeners and serves them until Stop. The first bind
 // error aborts startup and closes earlier listeners.
 func (r *Runner) Run() error {
+	var owners []*gateway
 	for _, gw := range r.gws {
 		for _, addr := range listenerAddrs(gw) {
 			ln, err := net.Listen("tcp", addr)
@@ -57,20 +58,18 @@ func (r *Runner) Run() error {
 				return fmt.Errorf("bind %s: %w", addr, err)
 			}
 			r.lns = append(r.lns, ln)
+			owners = append(owners, gw)
 		}
 	}
 	close(r.bound)
 	errCh := make(chan error, len(r.lns))
-	for i, gw := range r.gws {
-		n := len(listenerAddrs(gw))
-		for _, ln := range r.lns[i : i+n] {
-			ln := ln
-			r.wg.Add(1)
-			go func() {
-				defer r.wg.Done()
-				errCh <- gw.Serve(ln)
-			}()
-		}
+	for i, ln := range r.lns {
+		ln, gw := ln, owners[i]
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			errCh <- gw.Serve(ln)
+		}()
 	}
 	return <-errCh
 }

@@ -104,6 +104,64 @@ func TestReloadWritePolicy(t *testing.T) {
 	}
 }
 
+// TestReloadMBAPSRevokesEstablishedSession verifies that the certificate role
+// is session identity, not a frozen authorization decision. Tightening the
+// role table must affect the next request on the same mTLS connection.
+func TestReloadMBAPSRevokesEstablishedSession(t *testing.T) {
+	dev := newFakeDevice(t)
+	_, ca, clients := tlsChainMulti(t, []clientSpec{
+		{CN: "engineer client", Role: "engineer"},
+	})
+	tlsCfg := &config.TLSConfig{
+		Cert:     ca.serverCert,
+		Key:      ca.serverKey,
+		ClientCA: ca.clientCA,
+	}
+	r, front := startReloadable(t, config.Device{
+		Name:       "dev1",
+		DeviceAddr: dev.Addr(),
+		TLS:        tlsCfg,
+		MBAPS: &config.MBAPSConfig{Roles: map[string][]int{
+			"engineer": {3, 6},
+		}},
+	})
+
+	conn := mbapsDial(t, front, ca.clientCA, clients[0])
+	defer conn.Close()
+	write := []byte{6, 0x01, 0x00, 0xCA, 0xFE}
+	if resp := mbapsExchange(t, conn, 1, write); resp.IsException() {
+		t.Fatalf("write denied before reload: %x", resp.PDU)
+	}
+	if got := dev.Served(); got != 1 {
+		t.Fatalf("device served %d requests before reload, want 1", got)
+	}
+
+	cfg := &config.Config{Devices: []config.Device{{
+		Name:       "dev1",
+		ListenAddr: r.gws[0].dev.ListenAddr,
+		DeviceAddr: dev.Addr(),
+		TLS:        tlsCfg,
+		MBAPS: &config.MBAPSConfig{Roles: map[string][]int{
+			"engineer": {3}, // FC6 revoked
+		}},
+	}}}
+	cfg.Defaults()
+	if warn := r.Reload(cfg); len(warn) != 0 {
+		t.Fatalf("unexpected reload warnings: %v", warn)
+	}
+
+	resp := mbapsExchange(t, conn, 2, write)
+	if !resp.IsException() {
+		t.Fatalf("same-session write allowed after FC6 revocation: %x", resp.PDU)
+	}
+	if code, _ := resp.ExceptionCode(); code != mbtcp.ExceptionIllegalFunction {
+		t.Fatalf("revocation exception = %#x, want 0x01", code)
+	}
+	if got := dev.Served(); got != 1 {
+		t.Fatalf("device served %d requests; revoked write reached it", got)
+	}
+}
+
 // TestReloadACL: a tightened allow-list takes effect for NEW connections
 // while established connections keep working (an ACL is an admission
 // gate, not a session killer — documented behavior).
