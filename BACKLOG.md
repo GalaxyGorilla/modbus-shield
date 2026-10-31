@@ -1,7 +1,39 @@
 # BACKLOG — modbus-shield
 
-All items are done. The last ones (write policy + live config reload,
-B14) landed as a follow-up hardening pass. Kept for reference.
+The protocol and proxy backlog is complete. The open items below concern
+turnkey integration into a managed appliance with a web UI.
+
+## Open — appliance management integration
+
+- **A1 Versioned configuration schema:** expose a stable JSON Schema for every
+  YAML field, default, constraint, description, secret, and restart/reload
+  behavior. Generate or test it against the Go configuration types so UI forms
+  cannot silently drift from the daemon.
+- **A2 Restricted local management API:** provide a Unix-socket interface (or a
+  small shared management sidecar) for validate, self-test, apply, reload,
+  restart, status, and rollback. The web process must not run arbitrary shell
+  commands or require unrestricted root access. Keep the protocol data plane
+  independent from the management plane.
+- **A3 Transactional configuration:** stage a revision, run `validate --json`
+  and optional `selftest --json`, install it atomically, reload or restart as
+  required, verify health, and automatically restore the previous known-good
+  revision on failure. Preserve an auditable revision history.
+- **A4 Unified structured status:** expose the active configuration revision
+  and hash, readiness, configured and connected devices, reload result,
+  restart-required fields, and relevant counters as a stable JSON response.
+  Never include credentials or private-key material.
+- **A5 Secret and certificate lifecycle:** define safe upload, ownership,
+  permissions, validation, rotation, expiry reporting, backup, and redaction
+  behavior. Encryption at rest and master-key custody belong to the appliance
+  layer, not the protocol daemon.
+- **A6 Appliance-level acceptance tests:** exercise the complete web UI/API →
+  staged YAML → validation/self-test → systemd reload/restart → real Modbus
+  traffic path. Cover invalid configuration, interrupted apply, failed
+  self-test, rollback, secret rotation, power loss, and all supported appliance
+  architectures.
+
+Completion means an unprivileged management UI can safely configure and
+operate the service without duplicating undocumented daemon behavior.
 
 ## Post-backlog correctness fixes
 
