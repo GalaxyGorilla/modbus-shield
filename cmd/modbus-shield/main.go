@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -432,7 +431,7 @@ func runValidate(args []string) int {
 
 // runSelftest validates the configuration and then probes each
 // configured device with a real Modbus read (FC3) directly from this
-// host — proving the legacy device is reachable and speaks Modbus.
+// host, over its configured TLS/RTU transport — proving the device leg.
 // Designed for commissioning and health checks. Exit 0 = all
 // checks passed.
 func runSelftest(args []string) int {
@@ -499,11 +498,10 @@ func finishSelftest(rep report, jsonOut bool) int {
 }
 
 // probeDevice sends one Modbus FC3 read (holding register 0, quantity 1)
-// directly to the device and waits for a response — proves the legacy
-// device is reachable from this host and speaks Modbus TCP. An exception
-// response still proves liveness (the device answered on the wire), so
-// it passes with a note. Two attempts (some devices drop the first query
-// after ARP resolution).
+// directly to the device and waits for a response. The attempt uses the
+// configured device transport (plain/TLS and MBAP/RTU-over-TCP). An
+// exception response still proves liveness, so it passes with a note.
+// Two attempts cover devices that drop the first query after ARP resolution.
 func probeDevice(ctx context.Context, d config.Device) check {
 	name := "device " + d.DeviceAddr
 	unit := uint8(1)
@@ -519,7 +517,7 @@ func probeDevice(ctx context.Context, d config.Device) check {
 		if err := ctx.Err(); err != nil {
 			return check{Name: name, OK: false, Detail: lastErr}
 		}
-		ok, detail := probeAttempt(ctx, d.DeviceAddr, adu)
+		ok, detail := probeAttempt(ctx, d, adu)
 		if ok {
 			return check{Name: name, OK: true, Detail: detail}
 		}
@@ -528,24 +526,21 @@ func probeDevice(ctx context.Context, d config.Device) check {
 	return check{Name: name, OK: false, Detail: lastErr}
 }
 
-// probeAttempt performs one dial + read exchange with a 2s deadline.
-func probeAttempt(ctx context.Context, addr string, adu mbtcp.ADU) (bool, string) {
-	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
-	if err != nil {
+// probeAttempt performs one device-side exchange with a 2s deadline, using
+// the configured TLS, RTU-over-TCP and correlation behavior.
+func probeAttempt(ctx context.Context, d config.Device, adu mbtcp.ADU) (bool, string) {
+	if err := ctx.Err(); err != nil {
 		return false, err.Error()
 	}
-	defer conn.Close()
 	deadline := time.Now().Add(2 * time.Second)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
-	_ = conn.SetDeadline(deadline)
-	if _, err := conn.Write(adu.Frame()); err != nil {
-		return false, err.Error()
+	timeout := time.Until(deadline)
+	if timeout <= 0 {
+		return false, context.DeadlineExceeded.Error()
 	}
-	resp, err := mbtcp.ReadADU(conn)
+	resp, err := proxy.ProbeDevice(d, adu, timeout)
 	if err != nil {
 		return false, err.Error()
 	}
@@ -750,7 +745,7 @@ Other commands:
   modbus-shield selftest [--config <file> | same flags as gateway]
       [--probe=false] [--json]
       validate + probe each configured device with a real Modbus read
-      (FC3) directly from this host
+      (FC3) over its configured device-side transport
   modbus-shield genpsk   print a fresh random pre-shared key (hex; reserved for the future secured line)
   modbus-shield version
 `)

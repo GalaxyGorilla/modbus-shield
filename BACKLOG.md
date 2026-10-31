@@ -13,6 +13,10 @@ B14) landed as a follow-up hardening pass. Kept for reference.
   certificate role stays fixed for the TLS session, but its rights are looked
   up from the current SIGHUP runtime snapshot per request. Revocations now
   affect established clients immediately.
+- **Configured-transport selftest (2026-10-31):** commissioning probes now use
+  the production device-side TLS, RTU-over-TCP and lenient-correlation path
+  instead of always sending plain MBAP. The documented front-box mTLS selftest
+  now actually validates the certificate chain and far-box handshake.
 
 ## Done (kept for reference)
 

@@ -7,9 +7,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -143,6 +145,103 @@ func TestSelftestProbeAgainstFakeDevice(t *testing.T) {
 	ch := probeDevice(context.Background(), cfg.Devices[0])
 	if !ch.OK {
 		t.Fatalf("probeDevice failed: %s", ch.Detail)
+	}
+	if !strings.Contains(ch.Detail, "read ok") {
+		t.Fatalf("unexpected detail: %s", ch.Detail)
+	}
+}
+
+func TestSelftestProbeUsesDeviceTLS(t *testing.T) {
+	serverCert, serverKey, clientCA, clientCert, clientKey := tlsChainFilesCmd(t)
+	cert, err := tls.LoadX509KeyPair(serverCert, serverKey)
+	if err != nil {
+		t.Fatalf("load server keypair: %v", err)
+	}
+	caPEM, err := os.ReadFile(clientCA)
+	if err != nil {
+		t.Fatalf("read client CA: %v", err)
+	}
+	clientPool := x509.NewCertPool()
+	if !clientPool.AppendCertsFromPEM(caPEM) {
+		t.Fatal("append client CA")
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientPool,
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatalf("TLS listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveProbeClient(conn)
+		}
+	}()
+
+	c := validFlags()
+	*c.device = ln.Addr().String()
+	*c.devTLSCA = clientCA
+	*c.devTLSCert = clientCert
+	*c.devTLSKey = clientKey
+	cfg, err := loadChecked(c)
+	if err != nil {
+		t.Fatalf("loadChecked: %v", err)
+	}
+	ch := probeDevice(context.Background(), cfg.Devices[0])
+	if !ch.OK {
+		t.Fatalf("TLS probe failed: %s", ch.Detail)
+	}
+	if !strings.Contains(ch.Detail, "read ok") {
+		t.Fatalf("unexpected detail: %s", ch.Detail)
+	}
+}
+
+func TestSelftestProbeUsesRTUOverTCP(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				req := make([]byte, 8) // unit + FC3 request PDU + CRC
+				if _, err := io.ReadFull(conn, req); err != nil {
+					return
+				}
+				if mbtcp.VerifyRTUFrame(req) != nil {
+					return
+				}
+				resp, err := mbtcp.RTUFrame(req[0], []byte{3, 2, 0xCA, 0xFE})
+				if err == nil {
+					_, _ = conn.Write(resp)
+				}
+			}()
+		}
+	}()
+
+	c := validFlags()
+	*c.device = ln.Addr().String()
+	*c.rtuOverTCP = true
+	cfg, err := loadChecked(c)
+	if err != nil {
+		t.Fatalf("loadChecked: %v", err)
+	}
+	ch := probeDevice(context.Background(), cfg.Devices[0])
+	if !ch.OK {
+		t.Fatalf("RTU-over-TCP probe failed: %s", ch.Detail)
 	}
 	if !strings.Contains(ch.Detail, "read ok") {
 		t.Fatalf("unexpected detail: %s", ch.Detail)
@@ -414,7 +513,7 @@ func mustCmdECKey(t *testing.T, k *ecdsa.PrivateKey) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})
+	return kb
 }
 
 func TestFlagsConfigShieldingKeys(t *testing.T) {

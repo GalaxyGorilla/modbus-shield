@@ -65,6 +65,11 @@ Post-backlog correctness pass (2026-10-31):
   write on an already-established mTLS connection; previously that connection
   retained its old write rights indefinitely. Pinned by
   `TestReloadMBAPSRevokesEstablishedSession`.
+- **`selftest` uses the real device transport:** the probe previously always
+  sent MBAP over plain TCP, so a valid `device_tls` or `rtu_over_tcp`
+  deployment failed commissioning. `proxy.ProbeDevice` now reuses the
+  production TLS, RTU framing and lenient-correlation path; mTLS and
+  RTU-over-TCP probes are independently pinned in the command tests.
 
 Write-policy + reload pass (2026-10-27), the follow-up to the hardening
 pass (still no CI — user decision):
