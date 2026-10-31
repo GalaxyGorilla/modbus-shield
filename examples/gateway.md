@@ -10,10 +10,13 @@ TCP (a PLC, inverter, power meter, EV charger, heat pump...), you cannot
 or don't want to modify it, and you want it protected. Start at section 0
 for the Modbus background, then paste two lines.
 
-```
-[SCADA] --\
-[Node-RED] ---> Modbus TCP --> [modbus-shield box] --Modbus TCP--> [legacy device]
-[EV charger] --/                    (one upstream connection)
+```mermaid
+flowchart LR
+    C["Existing clients<br/>SCADA · Node-RED · charger"]
+    S["modbus-shield<br/>one protected front door"]
+    D["Legacy device<br/>unchanged"]
+    C -->|"Modbus TCP"| S
+    S -->|"one shared connection"| D
 ```
 
 This is the deployment for the retrofit use case: the box **is** the

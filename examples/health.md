@@ -6,10 +6,18 @@ health as readable registers on a virtual unit-ID**. No Prometheus, no
 extra port, no new tooling on site: point a health check at the box's
 front leg with a unit-ID that the real device never uses.
 
+```mermaid
+flowchart LR
+    C["SCADA"]
+    S["modbus-shield"]
+    D["Legacy device"]
+    C -->|"unit 200: box health"| S
+    C -->|"unit 1: device data"| S
+    S -->|"unit 1 only"| D
 ```
-[SCADA health poll] --Modbus TCP--> [modbus-shield] --Modbus TCP--> [legacy device]
-        unit 200  (answered by the box)     |  unit 1 (forwarded)
-```
+
+The same front address serves both paths. The virtual health unit stops at
+the box; ordinary device units continue upstream.
 
 ## 1. Enable it
 

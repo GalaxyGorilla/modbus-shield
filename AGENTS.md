@@ -51,6 +51,14 @@ serial ports.
 pass + identity rewording + portability/shielding hardening pass +
 write-policy/reload pass (B14) + multi-device/reload correctness fixes.**
 
+**Approachability pass (2026-10-31):** the README now leads with the common
+single-device path and links directly to the from-scratch walkthrough. Dense
+ASCII topologies across every user-facing example were replaced with a
+consistent Mermaid vocabulary (existing clients, modbus-shield, unchanged
+device); the deployment table now answers "your situation" / "what changes".
+Keep future diagrams small, task-oriented and understandable before explaining
+MBAP, mTLS or role details.
+
 Post-backlog correctness pass (2026-10-31):
 
 - **Multi-device `extra_listen` ownership fixed:** `Runner.Run` kept one flat

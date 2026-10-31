@@ -10,13 +10,21 @@ security and shielding work.
 **Never heard of Modbus?** Read the [two-minute primer](examples/gateway.md#2-two-minutes-of-modbus-background)
 below the fold — everything else in this document assumes only that.
 
+```mermaid
+flowchart LR
+    C["Existing clients<br/>SCADA · HMI · dashboards"]
+    S["modbus-shield<br/>allow-list · write policy · limits"]
+    D["Legacy Modbus device<br/>unchanged"]
+    C -->|"Modbus TCP"| S
+    S -->|"one shared connection"| D
 ```
-[SCADA] ──┐
-[Node-RED] ──► Modbus TCP ──►  ┌──────────────────────┐  ──Modbus TCP──►  ┌───────────────┐
-[EV charger]─┘  N clients      │    modbus-shield     │   one connection  │ legacy device │
-                               └──────────────────────┘                   └───────────────┘
-                               ACLs · read-only · limits
-```
+
+**Most users start here:** follow the
+[single-device gateway walkthrough](examples/gateway.md). It explains Modbus
+from scratch, gives a minimal configuration, and ends with a real connection
+test. Use the [scenario picker](#deployment-shape) only if you need TLS,
+multiple devices, two boxes, certificate roles, or a transparent cable-splice
+installation.
 
 ## Why
 
@@ -119,14 +127,15 @@ appliance; appliance-level orchestration remains outside this repository.
 - "I can't reconfigure anything — cable splice only" → [Transparent bump-in-the-wire](examples/transparent.md) (Linux-only)
 - "Plant SCADA should monitor the proxy itself" → [Health via Modbus](examples/health.md)
 
-| Shape | Topology | Use when |
+| Start here | Your situation | What changes |
 |---|---|---|
-| [Gateway](examples/gateway.md) (v1) | `[N clients] ⇄ modbus-shield ⇄ [legacy device]` | A proxy in front of the device; the classic deployment (often as a small dedicated box) |
-| [TLS front leg](examples/tls.md) (B1) | `[TLS clients] ⇄ TLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Clients on an untrusted segment; encrypted, optionally cert-authenticated (mTLS) front door |
-| [Two-proxy secured line](examples/two-proxy.md) (B2) | `[N clients] ⇄ plain ⇄ proxy ⇄ TLS/mTLS ⇄ proxy ⇄ plain ⇄ [device]` | Clients and device in different segments/sites; the untrusted link between the two proxies carries only TLS |
-| [Health via Modbus](examples/health.md) (B4) | `[SCADA] ⇄ modbus-shield ⇄ [device]` (health on a virtual unit-ID) | Plant SCADA monitors the proxy itself with the Modbus tooling it already has — no extra port or tooling |
-| [mbaps role authorization](examples/mbaps.md) (B12) | `[role clients] ⇄ mTLS ⇄ modbus-shield ⇄ plain ⇄ [device]` | Per-client function-code rights from certificate roles (MODBUS/TCP Security profile's role-based AuthZ on the front leg) |
-| [Transparent bump-in-the-wire](examples/transparent.md) (B3, Linux-only) | `[clients] --splice-- proxy --splice-- [device]` (clients keep dialing the device IP) | Cable-splice install: zero client/device reconfiguration; netfilter REDIRECT + conntrack original-dst; **fail-open** if the rule is missing |
+| [Gateway](examples/gateway.md) | One or more clients poll one legacy device | Clients point at modbus-shield; the device stays unchanged |
+| [TLS front leg](examples/tls.md) | The client-facing network is untrusted | Clients use TLS or mTLS to reach the same gateway |
+| [Two-proxy secured line](examples/two-proxy.md) | Clients and device are in different sites or segments | Place one box at each end; only the middle link uses TLS |
+| [Multi-device](examples/multi-device.md) | One box protects several devices | Give each device its own listener and policy |
+| [mbaps roles](examples/mbaps.md) | Different certificate holders need different rights | Add mTLS certificates carrying operator/engineer roles |
+| [Transparent mode](examples/transparent.md) | Clients cannot be repointed | Insert a Linux box in-path; clients keep dialing the device IP |
+| [Health via Modbus](examples/health.md) | SCADA should monitor the box itself | Reserve one virtual unit ID for proxy health |
 
 Planned (see [BACKLOG.md](BACKLOG.md)): none — all backlog items are done.
 Security note: the Modbus Organization publishes a TLS security

@@ -5,10 +5,20 @@ config-driven deployment. Each `devices:` entry couples exactly one
 front-leg listener with one upstream device; all entries in one file
 share the same log and metrics settings.
 
-```
-[SCADA] ──────► :5020 ──► modbus-shield ──► 10.0.0.42:502  (fragile PLC, read-only)
-[Node-RED] ───► :5021 ──► (one instance)   ──► 10.0.0.43:502  (inverter, free RW)
-[EV charger] ─► :5022 ──►                  ──► 10.0.0.44:502  (serial gateway w/ remap)
+```mermaid
+flowchart LR
+    C["Plant clients"]
+    S["one modbus-shield process"]
+    P["port 5020<br/>read-only + rate-limited"]
+    I["port 5021<br/>read/write"]
+    G["port 5022<br/>unit-ID remap"]
+    D1["PLC · 10.0.0.42:502"]
+    D2["Inverter · 10.0.0.43:502"]
+    D3["Serial gateway · 10.0.0.44:502"]
+    C --> S
+    S --> P --> D1
+    S --> I --> D2
+    S --> G --> D3
 ```
 
 Typical scenario: one box at the edge of a cell/segment with three

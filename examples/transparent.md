@@ -5,14 +5,17 @@ real IP:502 — the box intercepts the traffic inline. Zero client
 reconfiguration, zero device reconfiguration. Unplug the device's cable,
 plug both ends into the box, install one netfilter rule, done.
 
+```mermaid
+flowchart LR
+    C["Existing clients<br/>still dial the device IP"]
+    B["Two-NIC Linux box<br/>netfilter REDIRECT → modbus-shield"]
+    D["Legacy device<br/>same IP and configuration"]
+    C -->|"normal Modbus TCP traffic"| B
+    B -->|"forwarded to original destination"| D
 ```
-                        +--------------------+
- [clients] ----splice---| two-NIC Linux box  |---splice---- [legacy device]
-     (unchanged)        |   modbus-shield    |             (unchanged)
-                        +--------------------+
-        netfilter REDIRECT: tcp/502 -> gateway; gateway forwards to the
-        ORIGINAL destination recovered from conntrack (SO_ORIGINAL_DST)
-```
+
+The redirect rule is the interception point. Without it, traffic bypasses the
+proxy; this mode is deliberately fail-open.
 
 ## Requirements
 

@@ -5,10 +5,13 @@ commission it on site, monitor it, change its configuration, and
 troubleshoot it. The deployment itself is
 [examples/gateway.md](gateway.md) — this guide starts where that one ends.
 
-```
-[clients] ──Modbus TCP──► [modbus-shield] ──Modbus TCP──► [legacy device]
-                          (systemd service,      (plain, unmodified)
-                           metrics + logs)
+```mermaid
+flowchart LR
+    C["Plant clients"]
+    S["modbus-shield service<br/>systemd · logs · metrics"]
+    D["Legacy device<br/>plain and unmodified"]
+    C -->|"Modbus TCP"| S
+    S -->|"Modbus TCP"| D
 ```
 
 The box **is** the device's network path now — everything in this guide

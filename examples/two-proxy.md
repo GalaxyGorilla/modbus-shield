@@ -7,13 +7,15 @@ modbus-shield instances form a secured line — the front box accepts plain
 Modbus TCP from local clients, encrypts everything across the untrusted
 link, and the far box terminates TLS in front of the device:
 
-```
-[clients]                          untrusted link                        [device]
-   |                                      |                                 |
-   |-- plain Modbus TCP --> [front box] --TLS/mTLS--> [far box] -- plain -->|
-                            modbus-shield              modbus-shield
-                            gateway with               gateway with
-                            device_tls:                tls: (front leg)
+```mermaid
+flowchart LR
+    C["Local clients"]
+    F["Front box<br/>device_tls configured"]
+    R["Far box<br/>TLS front leg"]
+    D["Legacy device"]
+    C -->|"plain Modbus TCP<br/>trusted local segment"| F
+    F -->|"TLS / mutual TLS<br/>untrusted link"| R
+    R -->|"plain Modbus TCP<br/>short local leg"| D
 ```
 
 Both boxes run the **same binary** with the same `gateway` role — the far

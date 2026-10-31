@@ -5,10 +5,17 @@ Restrict what each client may do by issuing it a certificate with a
 role-based part of the [MODBUS/TCP Security Protocol Specification]
 (MB-TCP-Security-v36, the "mbaps" profile) on the front leg.
 
-```
-[operator client] --mTLS, role "operator"--> \
-[engineer client] --mTLS, role "engineer"-->  [modbus-shield] --plain--> [legacy device]
-[unknown client]  --mTLS, no role--------->  /
+```mermaid
+flowchart LR
+    O["Operator certificate<br/>role: operator"]
+    E["Engineer certificate<br/>role: engineer"]
+    U["Unknown or NULL role"]
+    S["modbus-shield<br/>role → allowed function codes"]
+    D["Legacy device"]
+    O -->|"mTLS"| S
+    E -->|"mTLS"| S
+    U -->|"mTLS; requests denied"| S
+    S -->|"authorized requests only"| D
 ```
 
 How it works:

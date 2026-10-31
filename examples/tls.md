@@ -4,8 +4,13 @@ Terminate TLS on the client-facing listener while the device-side wire
 stays plain Modbus TCP. The legacy device notices nothing — it still sees
 one plain connection from the box.
 
-```
-[TLS clients] --TLS--> [modbus-shield] --plain Modbus TCP--> [legacy device]
+```mermaid
+flowchart LR
+    C["Authorized clients"]
+    S["modbus-shield<br/>TLS termination"]
+    D["Legacy device<br/>no TLS required"]
+    C -->|"TLS or mutual TLS"| S
+    S -->|"plain Modbus TCP<br/>local device leg"| D
 ```
 
 Use this when clients are on an untrusted network segment (plant office,
