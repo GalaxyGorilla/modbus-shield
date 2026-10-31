@@ -85,6 +85,29 @@ limits, IP allow-lists, read-only policy, Prometheus metrics, config
 validation and self-tests, a static binary and hardened systemd units.
 It is intentionally opinionated about deployment and operations.
 
+## Hardware-pilot readiness
+
+The documented single-box scope is feature-complete and ready for testing
+against real PLCs, meters, drives, converters and gateways. On one development
+laptop the race suite exercises the full proxy, TLS/mTLS, RTU-over-TCP,
+multi-device routing, policy reloads and failure recovery; `mbpoll` independently
+drives reads, writes, exceptions, unit IDs and concurrent clients through the
+built gateway.
+
+That is a strong pre-hardware gate, not field certification. Hardware pilots
+still need to judge vendor-specific timing and framing quirks, days of load,
+power/network interruption, the target Linux host's transparent-netfilter path,
+and installation failure modes. External security review and any regulatory
+certification remain separate work. See the
+[operations guide](examples/operations.md) for commissioning and failure
+diagnosis.
+
+The commercial value is the retrofit boundary: operators can add encryption,
+identity, scoped writes and resilience without replacing the installed asset
+or translating its register model. This also makes modbus-shield suitable as
+the Modbus module in a broader multi-protocol critical-infrastructure
+appliance; appliance-level orchestration remains outside this repository.
+
 ## Deployment shape
 
 **Not sure which shape is yours?** The one-line picker:
@@ -178,13 +201,13 @@ kill -HUP $(cat /run/modbus-shield.pid)   # or: systemctl reload modbus-shield-g
 # --json for machine-readable output):
 modbus-shield validate --config /etc/modbus-shield/gateway.yaml
 
-# validate + probe the environment (real FC3 Modbus read directly to
-# each configured device; an exception response still proves liveness;
-# --probe=false skips the network):
+# validate + probe the environment (real FC3 read over each configured
+# device transport: plain/TLS and MBAP/RTU-over-TCP; an exception still
+# proves liveness; --probe=false skips the network):
 modbus-shield selftest --config /etc/modbus-shield/gateway.yaml
 
 # other commands:
-modbus-shield genpsk    # fresh random 32-byte hex key (for the TLS/mTLS modes)
+modbus-shield genpsk    # reserved helper; TLS/mTLS deployments use X.509 certs
 modbus-shield version
 ```
 
@@ -235,7 +258,8 @@ with `validate --json`, and offer a "test connection" button backed by
   per-request settings (ACLs, write policy, read-only, limits, cache TTL,
   pacing, idle timeout, unit-ID remap, health unit ID, mbaps roles) with
   no client disconnect and no device reconnect. Listener, device address
-  and TLS changes need a restart and are logged as warnings.
+  and TLS changes need a restart and are logged as warnings. MBAPS role
+  revocations affect the next request even on an established mTLS session.
 - **Shielding** — connection cap, token-bucket rate limit (shared and
   per client), optional request pacing and idle-client timeout per
   listener; rate-rejected requests get exception 0x06 (Server Device
@@ -282,11 +306,12 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
 - **systemd unit** — [`deploy/`](deploy/) ships a hardened unit file
   (`Type=notify`, `WatchdogSec=30`, `Restart=on-failure`,
   `ProtectSystem=strict`, `CAP_NET_BIND_SERVICE` for privileged ports).
-- **systemd watchdog** — the binary speaks sd_notify: `READY=1` on
-  startup and `WATCHDOG=1` pings while running (internal/watchdog), so a
-  wedged process is restarted by the host. When deployed on an in-path
-  box, it IS the device's network path — it must never hang silently.
-  No-ops outside systemd.
+- **systemd watchdog** — the binary speaks sd_notify: `READY=1` only after
+  every configured front listener has bound, then `WATCHDOG=1` pings while
+  running (internal/watchdog), so a bind failure is never advertised ready
+  and a wedged process is restarted by the host. When deployed on an in-path
+  box, it IS the device's network path — it must never hang silently. No-ops
+  outside systemd.
 - **Supply chain** — `make sbom` produces SPDX + CycloneDX SBOMs of the
   release binary into `dist/`; `make vulnscan` matches them against
   NVD/GHSA/OSV and fails on HIGH-severity findings. Both exit 77 (skip)
@@ -298,14 +323,20 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
 ## Testing
 
 ```bash
-make test      # vet + staticcheck + govulncheck + go test ./... -race -timeout 180s
-make interop   # real-client interop (mbpoll) against a fake device; exit 77 = skip
+make build        # bin/modbus-shield
+make vet          # go vet ./...
+make test         # gofmt gate + go test ./... -race -timeout 180s
+make staticcheck  # staticcheck ./...
+make govulncheck  # govulncheck ./...
+make interop      # real-client mbpoll interop; exit 77 = skip
 ```
 
 The test suite includes an in-Go fake Modbus device, e2e multiplexing
 and recovery tests under `-race`, goroutine-leak regression tests, fuzz
 targets for the MBAP parser with committed regression corpora (re-run
-in every `go test`), fairness and shutdown-drain tests, and a
+in every `go test`), fairness and shutdown-drain tests, multi-device
+primary/extra-listener isolation, live MBAPS revocation, configured-transport
+selftests, systemd readiness ordering, and a
 real-client interop script driving
 [mbpoll](https://github.com/epsilonrt/mbpoll) through the gateway
 (reads, writes, exception pass-through, unit-ID addressing, concurrent
