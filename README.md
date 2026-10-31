@@ -1,10 +1,4 @@
-<p align="center">
-  <a href="https://saschakattelmann.de">
-    <img src="docs/assets/sascha-kattelmann-logo.png" alt="Sascha Kattelmann" width="96">
-  </a>
-</p>
-
-# modbus-shield
+<h1><a href="https://saschakattelmann.de"><img src="docs/assets/sascha-kattelmann-logo.png" alt="Sascha Kattelmann" height="42"></a>&nbsp; modbus-shield</h1>
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/GalaxyGorilla/modbus-shield.svg)](https://pkg.go.dev/github.com/GalaxyGorilla/modbus-shield)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
