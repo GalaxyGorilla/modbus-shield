@@ -330,7 +330,8 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
 - **Supply chain** — `make sbom` produces SPDX + CycloneDX SBOMs of the
   release binary into `dist/`; `make vulnscan` matches them against
   NVD/GHSA/OSV and fails on HIGH-severity findings. Both exit 77 (skip)
-  when syft/grype are not installed.
+  when syft/grype are not installed. `scripts/sbom.sh` runs the same flow
+  standalone; `--sbom-only` generates artifacts without scanning.
 - **Operations** — reconnect with backoff, graceful shutdown, config
   reload via `SIGHUP` (no restarts, no dropped clients), config
   validation and self-tests for on-site commissioning.
@@ -339,11 +340,16 @@ Prometheus endpoint via `--metrics-addr` (or `metrics_listen` in YAML):
 
 ```bash
 make build        # bin/modbus-shield
-make vet          # go vet ./...
 make test         # gofmt gate + go test ./... -race -timeout 180s
-make staticcheck  # staticcheck ./...
-make govulncheck  # govulncheck ./...
+make vet          # go vet ./...
+make verify       # shared baseline: build + race suite + vet
+make acceptance   # verify + real mbpoll + real-binary reload/connection smokes
+make security     # verify + staticcheck + govulncheck + SBOM HIGH+ scan
+make release      # stripped static binary for deployment
+make release-all  # linux-amd64, linux-arm64 and linux-armv7 into dist/
 make interop      # real-client mbpoll interop; exit 77 = skip
+make sbom         # SPDX + CycloneDX documents for the release binary
+make vulnscan     # scan the SBOM; fail on HIGH-or-worse vulnerabilities
 ```
 
 The test suite includes an in-Go fake Modbus device, e2e multiplexing
@@ -364,6 +370,11 @@ FC3/FC4 reads, FC6 write, exception pass-through, unit-ID addressing,
 A real-binary smoke (`scripts/smoke-reload.sh`) drives the write policy
 and a live `SIGHUP` reload over sockets.
 
+`make verify`, `make acceptance`, and `make security` are the same umbrella
+interfaces used by SNMP Shield. Their protocol-specific internals differ:
+Modbus acceptance uses `mbpoll` and real-binary policy smokes, while SNMP
+acceptance needs its larger cross-vendor peer matrix.
+
 ## Documentation
 
 - [`examples/`](examples/) — copy-paste deployment walkthroughs with a
@@ -372,6 +383,9 @@ and a live `SIGHUP` reload over sockets.
   health-via-Modbus, transparent, and the production operations guide.
 - [`configs/`](configs/) — YAML template.
 - [`deploy/`](deploy/) — systemd unit file.
+- [`SECURITY.md`](SECURITY.md) — threat model, trust boundaries, hardening
+  controls, deliberate limits and vulnerability reporting.
+- [`TESTING.md`](TESTING.md) — test layers and release/security gates.
 - [`BACKLOG.md`](BACKLOG.md) — all items done; kept as the decision record.
 - [`AGENTS.md`](AGENTS.md) — architecture, wire-level details and the
   maintenance rules.

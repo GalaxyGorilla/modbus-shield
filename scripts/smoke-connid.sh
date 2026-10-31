@@ -10,9 +10,18 @@ set -eu
 cd "$(dirname "$0")/.."
 go build -o bin/modbus-shield ./cmd/modbus-shield
 
+LOG=$(mktemp "${TMPDIR:-/tmp}/modbus-shield-connid.XXXXXX")
+DEV_PID=
+GW_PID=
+cleanup() {
+	[ -z "$GW_PID" ] || kill "$GW_PID" 2>/dev/null || true
+	[ -z "$DEV_PID" ] || kill "$DEV_PID" 2>/dev/null || true
+	rm -f "$LOG"
+}
+trap cleanup EXIT INT TERM
+
 python3 scripts/fakedevice.py 15020 &
 DEV_PID=$!
-trap 'kill $DEV_PID 2>/dev/null || true' EXIT
 sleep 0.5
 
 ./bin/modbus-shield gateway \
@@ -20,9 +29,8 @@ sleep 0.5
 	--device 127.0.0.1:15020 \
 	--request-delay-ms 50 \
 	--log-level debug \
-	--log-format json > /tmp/opencode/b9_gateway.log 2>&1 &
+	--log-format json >"$LOG" 2>&1 &
 GW_PID=$!
-trap 'kill $DEV_PID $GW_PID 2>/dev/null || true' EXIT
 sleep 0.5
 
 python3 - << 'PYEOF'
@@ -67,7 +75,7 @@ sleep 0.3
 
 # Verify: [conn N] IDs appear in gateway log; IDs are small integers >= 1;
 # device-side lines carry the same [conn N] shape.
-CONNS=$(grep -o '\[conn [0-9]*\]' /tmp/opencode/b9_gateway.log | sort -u)
+CONNS=$(grep -o '\[conn [0-9]*\]' "$LOG" | sort -u || true)
 echo "distinct conn IDs in log:"
 echo "$CONNS"
 N=$(echo "$CONNS" | grep -c '\[conn')
@@ -75,7 +83,7 @@ if [ "$N" -lt 2 ]; then
 	echo "SMOKE-FAIL: expected >= 2 distinct conn IDs, got $N"
 	exit 1
 fi
-DEVICE_CONNS=$(grep 'device 127.0.0.1:15020' /tmp/opencode/b9_gateway.log | grep -o '\[conn [0-9]*\]' | sort -u | wc -l)
+DEVICE_CONNS=$(grep 'device 127.0.0.1:15020' "$LOG" | grep -o '\[conn [0-9]*\]' | sort -u | wc -l)
 if [ "$DEVICE_CONNS" -lt 2 ]; then
 	echo "SMOKE-FAIL: device-side log lines missing [conn N] IDs (got $DEVICE_CONNS)"
 	exit 1
