@@ -13,6 +13,10 @@ A **Modbus TCP security proxy** for legacy devices. One static binary.
 The device keeps speaking plain Modbus TCP; the proxy does all the
 security and shielding work.
 
+**Status:** production-ready for the documented software scope. Physical-device
+validation and site commissioning are still required; see
+[Production readiness](#production-readiness).
+
 **Never heard of Modbus?** Read the [two-minute primer](examples/gateway.md#2-two-minutes-of-modbus-background)
 below the fold — everything else in this document assumes only that.
 
@@ -99,22 +103,24 @@ limits, IP allow-lists, read-only policy, Prometheus metrics, config
 validation and self-tests, a static binary and hardened systemd units.
 It is intentionally opinionated about deployment and operations.
 
-## Hardware-pilot readiness
+## Production readiness
 
-The documented single-box scope is feature-complete and ready for testing
-against real PLCs, meters, drives, converters and gateways. On one development
-laptop the race suite exercises the full proxy, TLS/mTLS, RTU-over-TCP,
-multi-device routing, policy reloads and failure recovery; `mbpoll` independently
-drives reads, writes, exceptions, unit IDs and concurrent clients through the
-built gateway.
+The documented gateway scope is feature-complete and production-ready as
+software. The race suite exercises the built proxy, TLS/mTLS, RTU-over-TCP,
+multi-device routing, policy reloads and failure recovery; `mbpoll`
+independently drives reads, writes, exceptions, unit IDs and concurrent clients
+through the gateway. The repository also supplies hardened service units,
+health metrics, configuration validation, self-tests and an operations guide.
 
-That is a strong pre-hardware gate, not field certification. Hardware pilots
-still need to judge vendor-specific timing and framing quirks, days of load,
-power/network interruption, the target Linux host's transparent-netfilter path,
-and installation failure modes. External security review and any regulatory
-certification remain separate work. See the
-[operations guide](examples/operations.md) for commissioning and failure
-diagnosis.
+**Known validation boundary:** the project has not yet completed testing
+against physical PLCs, meters, drives, converters or gateways. Before relying
+on a specific installation, commission it with the real device and validate
+vendor timing/framing quirks, sustained load, power and network interruption,
+the target Linux host's transparent-netfilter path where used, and installation
+failure modes. This is deployment validation, not unfinished functionality in
+the documented scope. External security review and regulatory certification
+remain separate work. See the [operations guide](examples/operations.md) for
+commissioning and failure diagnosis.
 
 The commercial value is the retrofit boundary: operators can add encryption,
 identity, scoped writes and resilience without replacing the installed asset
