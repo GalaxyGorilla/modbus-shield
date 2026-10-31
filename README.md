@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://saschakattelmann.de">
+    <img src="docs/assets/sascha-kattelmann-logo.png" alt="Sascha Kattelmann" width="96">
+  </a>
+</p>
+
 # modbus-shield
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/GalaxyGorilla/modbus-shield.svg)](https://pkg.go.dev/github.com/GalaxyGorilla/modbus-shield)
