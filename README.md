@@ -11,7 +11,7 @@ security and shielding work.
 validation and site commissioning are still required; see
 [Production readiness](#production-readiness).
 
-**Never heard of Modbus?** Read the [two-minute primer](examples/gateway.md#2-two-minutes-of-modbus-background)
+**Never heard of Modbus?** Read the [two-minute primer](examples/gateway.md#0-two-minutes-of-modbus-background)
 below the fold — everything else in this document assumes only that.
 
 ```mermaid
