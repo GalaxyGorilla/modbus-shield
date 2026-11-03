@@ -55,6 +55,20 @@ distinct unit-ID remaps over persistent client connections and asserts zero
 unanswered rounds, flat goroutines, and a live heap that does not track the
 request count. It is a release-checklist item, not a CI one.
 
+## Focused mutation checks
+
+Not full mutation testing. Each row was applied to a clean tree, the named
+test failed, and the file was restored. The stale-response row found a test
+that passed for the wrong reason: it checked only the normalized transaction
+ID (which `exchange` rewrites even when it accepts the stale frame), so it now
+checks the payload and the stale-discard counter as well.
+
+| Invariant broken | Mutation | Test that caught it |
+|---|---|---|
+| Read-only write block | `if rt.readOnly && acl.IsWrite(...)` → `false` | `TestGatewayReadOnly` |
+| mTLS client-certificate requirement | `RequireAndVerifyClientCert` → `NoClientCert` | `TestGatewayMTLS` |
+| Stale-response discard | transaction-ID comparison → `false` | `TestUpstreamStaleDiscardUnit` |
+
 ## Remaining hardware boundary
 
 The single-machine suite cannot reproduce every PLC, meter, converter, switch

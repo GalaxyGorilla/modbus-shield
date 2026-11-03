@@ -218,22 +218,21 @@ func TestUpstreamStaleDiscardUnit(t *testing.T) {
 			if _, err := io.ReadFull(conn, pdu[:length-1]); err != nil {
 				return
 			}
-			// Stale response: echo everything but use txn 0xFFFF.
-			stale := make([]byte, 0, 7+length)
-			stale = append(stale, 0xFF, 0xFF)
-			stale = append(stale, hdr[2:6]...)
-			stale = append(stale, hdr[6])
-			stale = append(stale, pdu[:length-1]...)
-			conn.Write(stale)
-			// Correct response: echo header + PDU unchanged.
-			out := make([]byte, 0, 7+length)
-			out = append(out, hdr[:]...)
-			out = append(out, pdu[:length-1]...)
-			conn.Write(out)
+			// Stale response: a valid FC3 answer with a DIFFERENT value and
+			// transaction ID 0xFFFF. Checking only the normalized txn would
+			// pass even if the stale frame were accepted, because exchange
+			// rewrites the txn to the request's; the payload is the oracle.
+			stale, _ := mbtcp.NewADU(0xFFFF, hdr[6], []byte{3, 2, 0xDE, 0xAD})
+			conn.Write(stale.Frame())
+			// Correct response: the value the client must see.
+			txn := binary.BigEndian.Uint16(hdr[0:2])
+			out, _ := mbtcp.NewADU(txn, hdr[6], []byte{3, 2, 0xCA, 0xFE})
+			conn.Write(out.Frame())
 		}
 	}()
 
-	u := newUpstream(ln.Addr().String(), "test-dev", nopLogger{}, nil)
+	met := newCaptureMetrics()
+	u := newUpstream(ln.Addr().String(), "test-dev", nopLogger{}, met)
 	defer u.close()
 
 	req, _ := mbtcp.NewADU(1, 1, []byte{3, 0x00, 0x00, 0x00, 0x01})
@@ -243,6 +242,12 @@ func TestUpstreamStaleDiscardUnit(t *testing.T) {
 	}
 	if resp.Header.TransactionID != 1 {
 		t.Fatalf("got txn %d, want 1 (stale response not discarded)", resp.Header.TransactionID)
+	}
+	if got := binary.BigEndian.Uint16(resp.PDU[2:4]); got != 0xCAFE {
+		t.Fatalf("got value %#04x, want 0xCAFE (the stale frame was accepted)", got)
+	}
+	if met.stale == 0 {
+		t.Fatal("stale response was not counted")
 	}
 	u.close() // unblock the device read loop
 	<-devDone
