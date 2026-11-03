@@ -18,6 +18,14 @@ The box **is** the device's network path now — everything in this guide
 follows from that: it must come back up on its own, its state must be
 observable, and a restart must be boring.
 
+| I need to… | Go to |
+|---|---|
+| Understand what the proxy does and does not protect | [`../SECURITY.md`](../SECURITY.md) |
+| Pick or change the deployment shape | [`../README.md`](../README.md), [`gateway.md`](gateway.md), [`multi-device.md`](multi-device.md), [`tls.md`](tls.md), [`two-proxy.md`](two-proxy.md) |
+| Monitor the box from plant SCADA | [`health.md`](health.md) |
+| See what the tests actually prove | [`../TESTING.md`](../TESTING.md) |
+| Review the architecture and wire-level invariants | [`../AGENTS.md`](../AGENTS.md) |
+
 ## 1. Install as a service
 
 The release binary is static — the box needs nothing but the binary and
@@ -192,3 +200,19 @@ client storms, and config changes are invisible to it apart from that
 connection briefly dropping and re-dialing. The device cannot be
 overwhelmed by the front leg: `max_clients` and `rate_per_sec` bound
 what reaches it, and read-only listeners never let a write through.
+
+## 8. Security notes
+
+See [`../SECURITY.md`](../SECURITY.md) for the protected assets, trust
+boundaries and enforced controls. Three operational points stand out:
+
+- **Bind metrics to loopback** unless the monitoring network is trusted; the
+  metrics port is another listener on the box.
+- **The device leg is the trusted side, but it is still parsed strictly.** A
+  legacy device is exactly the kind of peer that sends a truncated or
+  non-conforming frame; the proxy bounds and validates it. That is a safety
+  net, not a substitute for isolating the clear leg.
+- **TLS is optional outside MBAPS mode.** A plain listener gives policy and
+  shielding, not confidentiality or cryptographic client identity; use
+  [`tls.md`](tls.md) or [`two-proxy.md`](two-proxy.md) when the network is
+  untrusted.

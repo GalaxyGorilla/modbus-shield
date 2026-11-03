@@ -4,6 +4,10 @@ Modbus Shield is a security boundary in front of legacy Modbus TCP devices. It
 reduces exposure; it does not make an untrusted device, host, or clear network
 segment trustworthy.
 
+Start with [`README.md`](README.md) for deployment shapes,
+[`examples/operations.md`](examples/operations.md) for day-2 operation, and
+[`TESTING.md`](TESTING.md) for the evidence and release gates.
+
 ## Protected assets
 
 - Availability of fragile devices and their single upstream connection.
