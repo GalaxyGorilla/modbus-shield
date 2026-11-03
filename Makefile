@@ -7,7 +7,7 @@ GO     ?= go
 VERSION ?= 1.0.1
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build test fmt-check vet staticcheck govulncheck race verify acceptance security interop soak cover release release-all release-assets sbom vulnscan clean
+.PHONY: all build test fmt-check vet staticcheck govulncheck race verify acceptance security peers interop interop-pymodbus interop-required soak cover release release-all release-assets sbom vulnscan clean
 
 all: build
 
@@ -48,9 +48,10 @@ soak:
 # Shared quality gates across the Shield projects.
 verify: build test vet
 
-# Acceptance adds a real independent Modbus client and real-binary policy
-# reload/connection-ID smoke tests to the deterministic race suite.
-acceptance: verify interop
+# Acceptance adds independent Modbus peers (mbpoll and pymodbus) and
+# real-binary policy reload/connection-ID smoke tests to the deterministic
+# race suite. A missing peer fails the release gate instead of skipping.
+acceptance: verify interop-required
 	sh scripts/smoke-reload.sh
 	sh scripts/smoke-connid.sh
 
@@ -58,11 +59,28 @@ acceptance: verify interop
 # unlike individual optional tooling probes, a missing tool fails this target.
 security: verify staticcheck govulncheck vulnscan
 
+# peers provisions the independent Python Modbus stack (pymodbus) in .venv.
+# Exit 77 when Python/pip is unavailable.
+peers:
+	sh scripts/peers-setup.sh
+
 # interop drives the built gateway with the real mbpoll client against a
 # fake device (reads, writes, exception pass-through, unit-ID addressing,
 # concurrent clients). Exit 77 when mbpoll is missing.
 interop: build
 	@MBPOLL_BIN="$${MBPOLL_BIN:-mbpoll}" sh scripts/interop-modbus.sh
+
+# interop-pymodbus drives both legs with an independent Python stack:
+# pymodbus client -> gateway -> pymodbus device. Exit 77 when the venv is
+# missing (run `make peers`).
+interop-pymodbus: build
+	@sh scripts/interop-pymodbus.sh
+
+# interop-required is the release gate: both independent peers must run,
+# not skip.
+interop-required: build
+	@INTEROP_REQUIRED=1 MBPOLL_BIN="$${MBPOLL_BIN:-mbpoll}" sh scripts/interop-modbus.sh
+	@INTEROP_REQUIRED=1 sh scripts/interop-pymodbus.sh
 
 # cover measures statement coverage and enforces the per-package floors in
 # coverage.floors. A single overall number hides the package that regressed;

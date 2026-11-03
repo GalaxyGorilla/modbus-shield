@@ -12,7 +12,7 @@ successful request forwarding.
 | End to end | Real proxy sockets, fake devices, reads/writes/exceptions, multiplexing, reconnect and stale-response discard |
 | Fault injection | A frame-aware TCP relay truncates a response, resets the device connection, or drops a request; the gateway returns a gateway-target-failure exception, reconnects, and serves the next request |
 | Lifecycle | Invalid/valid reloads, graceful drain, listener ownership, systemd readiness and watchdog |
-| Independent client | `mbpoll` drives the built gateway through reads, writes, exceptions, unit IDs and concurrent clients; a Python `ssl` client validates TLS and mTLS (including a client without a certificate) |
+| Independent peers | `mbpoll` drives the built gateway through reads, writes, exceptions, unit IDs and concurrent clients; pymodbus 3.16.2 runs as both client and device, so neither end of that chain is this project's code; a Python `ssl` client validates TLS and mTLS (including a client without a certificate) |
 | Real binary | Reload and connection-identity smoke scripts exercise the compiled command |
 
 ## Commands
@@ -20,7 +20,10 @@ successful request forwarding.
 ```sh
 make test          # gofmt + complete race suite
 make verify        # build + race suite + vet
-make acceptance    # verify + mbpoll + real-binary smokes
+make peers         # provision .venv with pymodbus 3.16.2
+make acceptance    # verify + mbpoll + pymodbus + real-binary smokes (peers required)
+make interop       # mbpoll client against the built gateway
+make interop-pymodbus # pymodbus client -> gateway -> pymodbus device
 make security      # verify + staticcheck + govulncheck + SBOM vulnerability gate
 make soak          # opt-in long soak: multi-device + multi-client (SOAK_DURATION=90s for a quick pass)
 make cover         # statement coverage + per-package floors (coverage.floors)

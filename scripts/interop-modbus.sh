@@ -17,7 +17,12 @@ cd "$(dirname "$0")/.."
 PATH="$PATH:/usr/local/go/bin"
 
 MBPOLL_BIN="${MBPOLL_BIN:-mbpoll}"
-command -v "$MBPOLL_BIN" >/dev/null 2>&1 || { echo "== mbpoll not found (apt: epsilonrt/mbpoll releases); SKIP"; exit 77; }
+command -v "$MBPOLL_BIN" >/dev/null 2>&1 || {
+  echo "== mbpoll not found (apt: epsilonrt/mbpoll releases)"
+  [ "${INTEROP_REQUIRED:-0}" = "1" ] && exit 1
+  echo "== SKIP"
+  exit 77
+}
 
 BIN=./bin/modbus-shield
 go build -o "$BIN" ./cmd/modbus-shield

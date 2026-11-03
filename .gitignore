@@ -29,3 +29,8 @@ certs/
 # Go workspace
 go.work
 go.work.sum
+
+# Python peer venv (pymodbus)
+.venv/
+__pycache__/
+*.pyc

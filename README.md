@@ -343,11 +343,13 @@ make build        # bin/modbus-shield
 make test         # gofmt gate + go test ./... -race -timeout 180s
 make vet          # go vet ./...
 make verify       # shared baseline: build + race suite + vet
-make acceptance   # verify + real mbpoll + real-binary reload/connection smokes
+make acceptance   # verify + mbpoll + pymodbus + real-binary reload/connection smokes
 make security     # verify + staticcheck + govulncheck + SBOM HIGH+ scan
 make release      # stripped static binary for deployment
 make release-all  # linux-amd64, linux-arm64 and linux-armv7 into dist/
+make peers        # provision .venv with pymodbus 3.16.2 (exit 77 without Python)
 make interop      # real-client mbpoll interop; exit 77 = skip
+make interop-pymodbus  # pymodbus client -> gateway -> pymodbus device
 make soak         # opt-in long multi-device and multi-client soaks
 make cover        # statement coverage + per-package floors (coverage.floors)
 make sbom         # SPDX + CycloneDX documents for the release binary
@@ -360,22 +362,26 @@ targets for the MBAP parser with committed regression corpora (re-run
 in every `go test`), fairness and shutdown-drain tests, multi-device
 primary/extra-listener isolation, live MBAPS revocation, configured-transport
 selftests, systemd readiness ordering, and a
-real-client interop script driving
-[mbpoll](https://github.com/epsilonrt/mbpoll) through the gateway
-(reads, writes, exception pass-through, unit-ID addressing, concurrent
-clients). The suite is green on Linux and macOS (the conntrack and
-systemd tests are the only platform-specific parts); there is no Modbus
-conformance suite — this suite is the anchor. The interop suite is
-actually run locally (`brew install mbpoll`, `make interop` → PASS):
-FC3/FC4 reads, FC6 write, exception pass-through, unit-ID addressing,
-8 concurrent mbpoll clients through one upstream connection.
+real-client interop scripts driving two independent stacks through the
+gateway. [mbpoll](https://github.com/epsilonrt/mbpoll) covers reads,
+writes, exception pass-through, unit-ID addressing and concurrent clients;
+[pymodbus](https://github.com/pymodbus-dev/pymodbus) runs as **both** the
+client and the device, so neither end of that chain is this project's code.
+The suite is green on Linux and macOS (the conntrack and systemd tests are
+the only platform-specific parts); there is no Modbus conformance suite —
+this suite is the anchor. The interop suite is actually run locally
+(`brew install mbpoll`, `make peers`, `make acceptance` → PASS): FC3/FC4
+reads, FC6 write, exception pass-through, unit-ID addressing, 8 concurrent
+mbpoll clients and 4 concurrent pymodbus clients through one upstream
+connection.
 A real-binary smoke (`scripts/smoke-reload.sh`) drives the write policy
 and a live `SIGHUP` reload over sockets.
 
 `make verify`, `make acceptance`, and `make security` are the same umbrella
 interfaces used by SNMP Shield. Their protocol-specific internals differ:
-Modbus acceptance uses `mbpoll` and real-binary policy smokes, while SNMP
-acceptance needs its larger cross-vendor peer matrix.
+Modbus acceptance uses `mbpoll`, pymodbus and real-binary policy smokes,
+while SNMP acceptance needs its larger cross-vendor peer matrix. A missing
+Modbus peer fails `make acceptance` instead of silently skipping.
 
 ## Documentation
 
