@@ -214,11 +214,19 @@ operate the service without duplicating undocumented daemon behavior.
   (mTLS hops, server_name override, bad-CA rejection).
 - ~~B15 Interop test client~~ — **done**: `scripts/interop-modbus.sh` +
   `make interop` drive the gateway with real mbpoll (reads, writes,
-  exception pass-through, unit-ID addressing, concurrent clients); exit 77
-  when mbpoll is missing.
+  exception pass-through, unit-ID addressing, concurrent clients); the same
+  script starts TLS and mTLS front legs and drives them with
+  `scripts/interop_tls_client.py` (Python `ssl`): server-auth TLS, mTLS with
+  a client certificate, a plain client refused, and an mTLS client without a
+  certificate refused. Exit 77 when mbpoll is missing.
 
 ## Done — testing (kept for reference)
 
+- **TCP fault injection:** a frame-aware relay
+  (`internal/proxy/faulttcp_test.go`) truncates a response, resets the
+  device connection, or drops a request. Each case must produce a
+  gateway-target-failure exception (code 11), then the next request on the
+  same client connection reconnects and succeeds.
 - **Soak coverage:** `make soak` (opt-in, 10 min) runs
   `TestSoakMultiDeviceSteadyState`: two co-hosted `devices:` entries with
   distinct unit-ID remaps under continuous reads — zero unanswered, flat

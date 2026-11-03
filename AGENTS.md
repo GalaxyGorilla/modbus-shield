@@ -565,8 +565,20 @@ or set `-timeout` on `go test` (network tests would hang without one).
   pass-through (mbpoll prints "Illegal data address" and exits 1 on a
   device exception — the script requires that), unit-ID addressing
   (`-a 17`), 8 concurrent mbpolls (multiplexing), and a chain-alive check.
-  Exit 77 when mbpoll is missing (`MBPOLL_BIN` overrides the binary path).
-  mbpoll refs are 1-based: register 0x0100 = `-r 257`.
+  It also starts TLS and mTLS front legs and drives them with
+  `scripts/interop_tls_client.py` (Python's `ssl`, not Go's `crypto/tls`):
+  server-auth TLS, mTLS with a client certificate, a plain client refused,
+  and an mTLS client without a certificate refused. Exit 77 when mbpoll is
+  missing (`MBPOLL_BIN` overrides the binary path). mbpoll refs are 1-based:
+  register 0x0100 = `-r 257`.
+- **TCP fault injection** (`internal/proxy/faulttcp_test.go`): a frame-aware
+  relay between the gateway and the fake device truncates the first response
+  after five bytes, resets the device connection after the first request, or
+  drops the first request. Each test asserts the client receives
+  gateway-target-failure (code 11) rather than hanging, then the next request
+  on the same client connection reconnects and succeeds. This pins the
+  stream/reconnect contract; the real-WAN and physical-PLC boundaries remain
+  commissioning work.
 - **Graceful shutdown**: `gateway.Serve` returns **nil** on
   `errors.Is(err, net.ErrClosed)` (Stop() closed the listener = clean
   shutdown, not an error). Any other Accept error is fatal to Run. Without

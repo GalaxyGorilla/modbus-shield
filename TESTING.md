@@ -10,8 +10,9 @@ successful request forwarding.
 | Shielding | Connection caps, shared/per-client rates, fair serialization, pacing and idle eviction |
 | Transport | Plain TCP, TLS/mTLS, upstream TLS, RTU-over-TCP and transparent routing |
 | End to end | Real proxy sockets, fake devices, reads/writes/exceptions, multiplexing, reconnect and stale-response discard |
+| Fault injection | A frame-aware TCP relay truncates a response, resets the device connection, or drops a request; the gateway returns a gateway-target-failure exception, reconnects, and serves the next request |
 | Lifecycle | Invalid/valid reloads, graceful drain, listener ownership, systemd readiness and watchdog |
-| Independent client | `mbpoll` drives the built gateway through reads, writes, exceptions, unit IDs and concurrent clients |
+| Independent client | `mbpoll` drives the built gateway through reads, writes, exceptions, unit IDs and concurrent clients; a Python `ssl` client validates TLS and mTLS (including a client without a certificate) |
 | Real binary | Reload and connection-identity smoke scripts exercise the compiled command |
 
 ## Commands
@@ -35,6 +36,10 @@ Individual release checks remain available as `make staticcheck`,
 - Denied writes never reach the device.
 - An invalid reload cannot replace the active policy.
 - Device TLS and RTU-over-TCP commissioning use the production transport path.
+- An independent Python `ssl` client completes TLS and mTLS, while a plain
+  client and an mTLS client without a certificate are refused.
+- A truncated response, a device reset and a dropped request each become a
+  gateway-target-failure exception; the next request reconnects and succeeds.
 - A listener bind failure cannot emit systemd `READY=1`.
 - Shutdown drains in-flight requests, while stale or mismatched responses are
   never delivered to another client.

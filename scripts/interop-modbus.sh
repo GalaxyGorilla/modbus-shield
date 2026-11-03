@@ -34,14 +34,26 @@ EOF
 
 DEV_PORT=$(free_port)
 GW_PORT=$(free_port)
+TLS_PORT=$(free_port)
+MTLS_PORT=$(free_port)
 
 python3 scripts/fakedevice.py "$DEV_PORT" &
 FAKE_PID=$!
-trap 'kill $FAKE_PID $GW_PID 2>/dev/null || true' EXIT INT TERM
+trap 'kill $FAKE_PID $GW_PID $TLS_GW_PID $MTLS_GW_PID 2>/dev/null || true' EXIT INT TERM
 
 "$BIN" gateway --listen "127.0.0.1:$GW_PORT" --device "127.0.0.1:$DEV_PORT" \
   --log-level error &
 GW_PID=$!
+
+# Independent TLS/mTLS client: Python's ssl module, not Go's crypto/tls.
+sh scripts/gen-certs.sh >/dev/null 2>&1
+"$BIN" gateway --listen "127.0.0.1:$TLS_PORT" --device "127.0.0.1:$DEV_PORT" \
+  --tls-cert certs/server.crt --tls-key certs/server.key --log-level error &
+TLS_GW_PID=$!
+"$BIN" gateway --listen "127.0.0.1:$MTLS_PORT" --device "127.0.0.1:$DEV_PORT" \
+  --tls-cert certs/server.crt --tls-key certs/server.key --tls-client-ca certs/ca.crt \
+  --log-level error &
+MTLS_GW_PID=$!
 sleep 0.5
 
 fail=0
@@ -84,6 +96,22 @@ for pid in $pids; do wait "$pid" || rc=1; done
 echo "== chain alive after burst"
 out=$($MBPOLL_BIN $OPTS -r 257 -c 1 -t 4:hex -p "$P" "$D" 2>&1) || { echo "FAIL: chain dead: $out"; fail=1; }
 echo "$out" | grep -q "0xCAFE" || { echo "FAIL: chain broken: $out"; fail=1; }
+
+echo "== TLS front leg: independent Python ssl client"
+python3 scripts/interop_tls_client.py --port "$TLS_PORT" --mode tls \
+  --ca certs/ca.crt --server-name localhost || { echo "FAIL: TLS client"; fail=1; }
+
+echo "== TLS front leg: plain Modbus client is refused"
+python3 scripts/interop_tls_client.py --port "$TLS_PORT" --mode plain || { echo "FAIL: plain client was not refused"; fail=1; }
+
+echo "== mTLS front leg: client certificate accepted"
+python3 scripts/interop_tls_client.py --port "$MTLS_PORT" --mode mtls \
+  --ca certs/ca.crt --server-name localhost \
+  --cert certs/client.crt --key certs/client.key || { echo "FAIL: mTLS client"; fail=1; }
+
+echo "== mTLS front leg: client without a certificate is refused"
+python3 scripts/interop_tls_client.py --port "$MTLS_PORT" --mode mtls-no-client-cert \
+  --ca certs/ca.crt --server-name localhost || { echo "FAIL: mTLS accepted a client without a certificate"; fail=1; }
 
 if [ "$fail" = 0 ]; then
   echo "== interop: PASS"
