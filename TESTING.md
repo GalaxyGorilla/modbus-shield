@@ -55,6 +55,9 @@ distinct unit-ID remaps over persistent client connections and asserts zero
 unanswered rounds, flat goroutines, and a live heap that does not track the
 request count. It is a release-checklist item, not a CI one.
 
+A full 10-minute run on 2026-11-03: 95,656 rounds, worst round trip 38 ms,
+goroutines `11 → 11`, live heap `0.3 → 0.3 MiB`.
+
 ## Focused mutation checks
 
 Not full mutation testing. Each row was applied to a clean tree, the named
