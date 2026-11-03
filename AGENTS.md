@@ -39,6 +39,7 @@ serial ports.
 | Primary shape | **Gateway reverse proxy** (clients repointed to the proxy); transparent bump-in-the-wire is backlog B3; two-proxy secured line is B2 |
 | Security v1 | **IP ACLs + write policy (read-only OR address-scoped rules) + shielding limits** (conn cap + rate limit); TLS front leg is B1; per-role FC rights over mTLS (mbaps mode) is B12 |
 | Caching | **None** — exactly transparent semantics (opt-in TTL cache is B8) |
+| Soak | `make soak` (10 min, `MODBUS_SHIELD_SOAK=1`, `SOAK_DURATION` overrides) runs the multi-device steady-state test: two `devices:` entries, zero unanswered rounds, flat goroutines and live heap. It is a release-checklist item, not a CI one; normal `make test` skips it |
 | Config changes | Live reload via **SIGHUP** for everything per-request (ACLs, write policy, limits, cache TTL, pacing, timeouts, remap, mbaps roles); listeners/device address/TLS need a restart and are reported as reload warnings |
 | Transport level | Parse the 7-byte MBAP header, forward the PDU as an **opaque blob** — vendor register-map/encoding chaos flows through untouched |
 | Correlation posture | **Strict on framing, liberal on correlation** — real devices deviate (wonky txn-ID echo, unit-ID swaps) |
@@ -280,10 +281,12 @@ historical notes.
 go build ./...
 go vet ./...
 go test ./... -race -timeout 180s
+make soak   # 10 min multi-device soak (SOAK_DURATION=90s for a quick pass)
 ```
 
 `make build` / `make test` / `make vet` / `make release` wrap the same
-commands (`make test` also fails on non-empty `gofmt -l` output — the
+commands (`make soak` is the opt-in long multi-device steady-state run;
+`make test` also fails on non-empty `gofmt -l` output — the
 only formatting gate in this CI-free project; `release` = stripped
 static binary, `CGO_ENABLED=0
 -trimpath -ldflags "-s -w"`, for appliance deployment). `make release-all`

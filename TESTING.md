@@ -21,6 +21,7 @@ make test          # gofmt + complete race suite
 make verify        # build + race suite + vet
 make acceptance    # verify + mbpoll + real-binary smokes
 make security      # verify + staticcheck + govulncheck + SBOM vulnerability gate
+make soak          # opt-in long multi-device soak (SOAK_DURATION=90s for a quick pass)
 ```
 
 Individual release checks remain available as `make staticcheck`,
@@ -38,6 +39,16 @@ Individual release checks remain available as `make staticcheck`,
 - Shutdown drains in-flight requests, while stale or mismatched responses are
   never delivered to another client.
 - Cache hits and rate limits follow the documented device-protection ordering.
+
+## Soak
+
+`make soak` runs `TestSoakMultiDeviceSteadyState` for ten minutes per test
+(`SOAK_DURATION` overrides it, e.g. `make soak SOAK_DURATION=90s`). It is
+skipped unless `MODBUS_SHIELD_SOAK=1`, which `make soak` sets, so a normal
+`make test` stays fast. The test drives two co-hosted `devices:` entries with
+distinct unit-ID remaps over persistent client connections and asserts zero
+unanswered rounds, flat goroutines, and a live heap that does not track the
+request count. It is a release-checklist item, not a CI one.
 
 ## Remaining hardware boundary
 

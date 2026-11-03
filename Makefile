@@ -5,7 +5,7 @@
 BINARY := modbus-shield
 GO     ?= go
 
-.PHONY: all build test fmt-check vet staticcheck govulncheck race verify acceptance security interop release release-all sbom vulnscan clean
+.PHONY: all build test fmt-check vet staticcheck govulncheck race verify acceptance security interop soak release release-all sbom vulnscan clean
 
 all: build
 
@@ -31,6 +31,13 @@ govulncheck:
 	~/go/bin/govulncheck ./...
 
 race: test
+
+# soak runs the long multi-device steady-state test a green `make test`
+# cannot judge: continuous load, flat goroutines and live heap. Ten minutes
+# by default; SOAK_DURATION overrides it (e.g. `make soak SOAK_DURATION=90s`).
+soak:
+	MODBUS_SHIELD_SOAK=1 MODBUS_SHIELD_SOAK_DURATION=$${SOAK_DURATION:-10m} \
+		$(GO) test ./internal/proxy -run 'TestSoak' -count=1 -timeout 30m -v
 
 # Shared quality gates across the Shield projects.
 verify: build test vet

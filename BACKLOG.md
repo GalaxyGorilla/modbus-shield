@@ -217,6 +217,15 @@ operate the service without duplicating undocumented daemon behavior.
   exception pass-through, unit-ID addressing, concurrent clients); exit 77
   when mbpoll is missing.
 
+## Done — testing (kept for reference)
+
+- **Soak coverage:** `make soak` (opt-in, 10 min) runs
+  `TestSoakMultiDeviceSteadyState`: two co-hosted `devices:` entries with
+  distinct unit-ID remaps under continuous reads — zero unanswered, flat
+  goroutines, bounded live heap. The normal `make test` skips it; the full
+  run is a release-checklist item. A 20s quick pass is green (3,252 rounds,
+  goroutines 11→11, live heap 0.3→0.3 MiB).
+
 ## Out of scope (do not re-litigate)
 
 - SunSpec/register conversion or any data-model translation — transport-level
