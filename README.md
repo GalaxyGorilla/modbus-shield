@@ -348,6 +348,8 @@ make security     # verify + staticcheck + govulncheck + SBOM HIGH+ scan
 make release      # stripped static binary for deployment
 make release-all  # linux-amd64, linux-arm64 and linux-armv7 into dist/
 make interop      # real-client mbpoll interop; exit 77 = skip
+make soak         # opt-in long multi-device and multi-client soaks
+make cover        # statement coverage + per-package floors (coverage.floors)
 make sbom         # SPDX + CycloneDX documents for the release binary
 make vulnscan     # scan the SBOM; fail on HIGH-or-worse vulnerabilities
 ```

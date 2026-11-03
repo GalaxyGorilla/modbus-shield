@@ -5,7 +5,7 @@
 BINARY := modbus-shield
 GO     ?= go
 
-.PHONY: all build test fmt-check vet staticcheck govulncheck race verify acceptance security interop soak release release-all sbom vulnscan clean
+.PHONY: all build test fmt-check vet staticcheck govulncheck race verify acceptance security interop soak cover release release-all sbom vulnscan clean
 
 all: build
 
@@ -19,7 +19,11 @@ fmt-check:
 		echo "gofmt needed on:"; echo "$$out"; exit 1; fi
 
 test: fmt-check
-	$(GO) test ./... -race -timeout 180s
+	# -p 1: fixtures probe free UDP/TCP ports before binding them, so
+	# packages running in parallel can steal a probed port and turn a
+	# green suite into an environment race. Serialising packages keeps
+	# the gate deterministic; run a single package for a fast edit loop.
+	$(GO) test ./... -p 1 -race -timeout 600s
 
 vet:
 	$(GO) vet ./...
@@ -57,6 +61,19 @@ security: verify staticcheck govulncheck vulnscan
 # concurrent clients). Exit 77 when mbpoll is missing.
 interop: build
 	@MBPOLL_BIN="$${MBPOLL_BIN:-mbpoll}" sh scripts/interop-modbus.sh
+
+# cover measures statement coverage and enforces the per-package floors in
+# coverage.floors. A single overall number hides the package that regressed;
+# the floors make a drop in the security boundary visible even when the total
+# is flat. This is a regression gate, not a target to game: raise a floor when
+# a package improves, and add a test rather than lowering it.
+cover:
+	@mkdir -p dist
+	# -p 1: the fixtures probe free UDP ports (FreeUDPPort is a probe, not a
+	# reservation), so packages running in parallel can steal each other's
+	# port. Serialising packages keeps this gate deterministic.
+	$(GO) test ./... -p 1 -covermode=atomic -coverprofile=dist/cover.out -timeout 600s
+	$(GO) run ./scripts/covercheck dist/cover.out coverage.floors
 
 # release builds a stripped static binary for appliance deployment.
 release:

@@ -22,11 +22,22 @@ make test          # gofmt + complete race suite
 make verify        # build + race suite + vet
 make acceptance    # verify + mbpoll + real-binary smokes
 make security      # verify + staticcheck + govulncheck + SBOM vulnerability gate
-make soak          # opt-in long multi-device soak (SOAK_DURATION=90s for a quick pass)
+make soak          # opt-in long soak: multi-device + multi-client (SOAK_DURATION=90s for a quick pass)
+make cover         # statement coverage + per-package floors (coverage.floors)
 ```
 
 Individual release checks remain available as `make staticcheck`,
 `make govulncheck`, `make sbom` and `make vulnscan`.
+
+## Coverage gate
+
+`make cover` runs the suite with a coverage profile and enforces the
+per-package floors in [`coverage.floors`](coverage.floors). The overall figure
+excludes packages marked `skip` (test-only helpers and tooling), so it tracks
+the production surface. A floor is a regression alarm, not a target: raise it
+when a package improves, and add a test rather than lowering it. Packages run
+serially (`-p 1`) so the socket fixtures cannot steal each other's probed
+ports.
 
 ## Security regressions pinned explicitly
 
@@ -47,13 +58,16 @@ Individual release checks remain available as `make staticcheck`,
 
 ## Soak
 
-`make soak` runs `TestSoakMultiDeviceSteadyState` for ten minutes per test
-(`SOAK_DURATION` overrides it, e.g. `make soak SOAK_DURATION=90s`). It is
-skipped unless `MODBUS_SHIELD_SOAK=1`, which `make soak` sets, so a normal
-`make test` stays fast. The test drives two co-hosted `devices:` entries with
-distinct unit-ID remaps over persistent client connections and asserts zero
+`make soak` runs `TestSoakMultiDeviceSteadyState` and
+`TestSoakMultiClientSteadyState` for ten minutes per test (`SOAK_DURATION`
+overrides it, e.g. `make soak SOAK_DURATION=90s`). They are skipped unless
+`MODBUS_SHIELD_SOAK=1`, which `make soak` sets, so a normal `make test` stays
+fast. The multi-device test drives two co-hosted `devices:` entries with
+distinct unit-ID remaps over persistent client connections. The multi-client
+test drives eight clients into one fragile device with distinct unit and
+transaction IDs, asserting one upstream connection, correct correlation, zero
 unanswered rounds, flat goroutines, and a live heap that does not track the
-request count. It is a release-checklist item, not a CI one.
+request count. They are release-checklist items, not CI ones.
 
 A full 10-minute run on 2026-11-03: 95,656 rounds, worst round trip 38 ms,
 goroutines `11 → 11`, live heap `0.3 → 0.3 MiB`.

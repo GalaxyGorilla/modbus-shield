@@ -1,0 +1,14 @@
+# Per-package statement-coverage floors for `make cover`.
+#
+# Floors are set just below the measured value so they catch a real
+# regression without failing on a one-line refactor. Raise a floor when a
+# package improves; lower one only with a comment explaining why.
+ALL                80
+cmd/modbus-shield  57
+internal/acl       92
+internal/config    95
+internal/mbtcp     88
+internal/observ    77
+internal/proxy     86
+internal/watchdog  92
+scripts/covercheck skip
