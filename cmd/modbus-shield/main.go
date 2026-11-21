@@ -362,10 +362,11 @@ type check struct {
 // report is the JSON document printed by validate --json and
 // selftest --json (for tooling / web UIs).
 type report struct {
-	OK      bool    `json:"ok"`
-	Error   string  `json:"error,omitempty"`
-	Devices []check `json:"devices,omitempty"`
-	Checks  []check `json:"checks,omitempty"`
+	OK            bool    `json:"ok"`
+	SchemaVersion int     `json:"schema_version"`
+	Error         string  `json:"error,omitempty"`
+	Devices       []check `json:"devices,omitempty"`
+	Checks        []check `json:"checks,omitempty"`
 }
 
 // deviceChecks summarizes the configured devices for validate output.
@@ -425,6 +426,7 @@ func runValidate(args []string) int {
 		rep.Error = err.Error()
 		return finishReport(rep, *c.jsonOut, "validate")
 	}
+	rep.SchemaVersion = cfg.SchemaVersion
 	rep.Devices = deviceChecks(cfg)
 	return finishReport(rep, *c.jsonOut, "validate")
 }

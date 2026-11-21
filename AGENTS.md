@@ -44,6 +44,7 @@ serial ports.
 | Transport level | Parse the 7-byte MBAP header, forward the PDU as an **opaque blob** — vendor register-map/encoding chaos flows through untouched |
 | Correlation posture | **Strict on framing, liberal on correlation** — real devices deviate (wonky txn-ID echo, unit-ID swaps) |
 | Config | YAML per instance + no-YAML flags one-liner mode (field techs paste two lines) |
+| Config decoding | **Strict**: an unknown YAML key is rejected before decoding with a stable ID and field path (`config.schema.unknown_field at devices[0].read_onyl`). A silently ignored typo is a policy bypass. Top-level `schema_version` defaults to 1; an unknown version fails with `config.schema.version_unsupported`. `validate --json` reports `schema_version` |
 | Ground truth | Modbus Organization spec PDFs, NOT RFCs (none exist): MODBUS Application Protocol Specification V1.1b3 (Apr 2012) + MODBUS Messaging on TCP/IP Implementation Guide V1.0b. For security: MODBUS/TCP Security Protocol Specification MB-TCP-Security-v36 (2021-07-30) — the "mbaps" profile (port 802, mandatory mutual TLS, role-OID AuthZ). Our TLS legs are wire-compatible with it; full mbaps conformance (mandatory mTLS + role-based AuthZ) is a possible future mode, NOT adopted in v1 because retrofit clients/devices don't speak it |
 
 ## 3. Status / Roadmap

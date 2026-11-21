@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
 	"time"
 
 	"github.com/GalaxyGorilla/modbus-shield/internal/acl"
@@ -257,6 +258,10 @@ type LogConfig struct {
 
 // Config is the top-level instance configuration.
 type Config struct {
+	// SchemaVersion is the configuration schema this file was written for.
+	// 0 in a file means 1. A version this binary does not know is rejected.
+	SchemaVersion int `yaml:"schema_version"`
+
 	// Devices is the list of listener<->device pairs. At least one is
 	// required (v1: unique listen addresses).
 	Devices []Device `yaml:"devices"`
@@ -284,6 +289,9 @@ func Load(path string) (*Config, error) {
 
 // Parse parses and validates YAML configuration bytes.
 func Parse(data []byte) (*Config, error) {
+	if err := checkStrict(data, reflect.TypeOf(Config{})); err != nil {
+		return nil, err
+	}
 	c := &Config{}
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("parse yaml: %w", err)
@@ -297,6 +305,9 @@ func Parse(data []byte) (*Config, error) {
 
 // Defaults fills unset fields with sane values.
 func (c *Config) Defaults() {
+	if c.SchemaVersion == 0 {
+		c.SchemaVersion = CurrentSchemaVersion
+	}
 	for i := range c.Devices {
 		d := &c.Devices[i]
 		if d.Name == "" {
@@ -320,6 +331,16 @@ func (c *Config) Defaults() {
 // Validate checks the configuration. Called by Load/Parse; safe to call
 // again after mutating fields programmatically.
 func (c *Config) Validate() error {
+	if c.SchemaVersion == 0 {
+		c.SchemaVersion = CurrentSchemaVersion
+	}
+	if c.SchemaVersion != CurrentSchemaVersion {
+		return &SchemaError{
+			ID:      ErrorVersionUnsupported,
+			Path:    "schema_version",
+			Message: fmt.Sprintf("this binary accepts schema_version %d, got %d", CurrentSchemaVersion, c.SchemaVersion),
+		}
+	}
 	if len(c.Devices) == 0 {
 		return fmt.Errorf("config: at least one device entry is required")
 	}
