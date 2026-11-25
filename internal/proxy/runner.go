@@ -65,7 +65,6 @@ func (r *Runner) Run() error {
 			owners = append(owners, gw)
 		}
 	}
-	close(r.bound)
 	errCh := make(chan error, len(r.lns))
 	for i, ln := range r.lns {
 		ln, gw := ln, owners[i]
@@ -75,6 +74,10 @@ func (r *Runner) Run() error {
 			errCh <- gw.Serve(ln)
 		}()
 	}
+	// Signal readiness only after every Serve goroutine has been registered
+	// (wg.Add), so a caller that observes Ready and then Stop cannot race
+	// wg.Wait against a concurrent wg.Add.
+	close(r.bound)
 	return <-errCh
 }
 
